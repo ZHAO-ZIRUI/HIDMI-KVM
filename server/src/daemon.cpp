@@ -693,14 +693,23 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
             int buttons = static_cast<int>(buttons_mask_to_int(mouse.buttons_mask()));
             int x = internal::protocol_absolute_to_hid(mouse.abs_x());
             int y = internal::protocol_absolute_to_hid(mouse.abs_y());
+            int dx = std::max(-127, std::min(127, static_cast<int>(mouse.rel_dx())));
+            int dy = std::max(-127, std::min(127, static_cast<int>(mouse.rel_dy())));
             int wheel = std::max(-127, std::min(127, static_cast<int>(mouse.wheel_delta_y())));
             led_input_received();
             try {
                 std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-                require_hid().write_absolute_mouse_report(buttons, x, y, mouse.has_reliable_edge() ? 25 : 10);
-                if (wheel != 0) {
-                    require_hid().write_mouse_report(buttons, 0, 0, wheel, 25);
-                }
+                require_hid().write_pointer_report(
+                    buttons,
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    wheel,
+                    mouse.has_reliable_edge(),
+                    mouse.has_reliable_edge() ? 25 : 10
+                );
+                record_mouse_pressed_state(buttons);
                 record_absolute_mouse_pressed_state(buttons);
                 led_hid_event_sent(buttons != 0);
                 led_hid_success();
@@ -954,6 +963,13 @@ void Daemon::mark_hid_failed(const std::string& reason) {
 }
 
 void Daemon::retry_hid_if_due() {
+    {
+        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+        if (hid_) {
+            hid_->try_reopen_absolute(false);
+            return;
+        }
+    }
     ensure_hid_available(false);
 }
 

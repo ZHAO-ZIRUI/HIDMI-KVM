@@ -108,9 +108,17 @@ public:
     void open();
     void close();
     void close_without_release() noexcept;
+    bool keyboard_available() const;
+    bool relative_mouse_available() const;
+    bool absolute_mouse_available() const;
+    bool mandatory_available() const;
+    bool absolute_mouse_degraded() const;
+    const std::string& last_absolute_error() const;
+    bool try_reopen_absolute(bool force = false);
     void write_keyboard_report(int modifiers, const std::vector<int>& keys, int timeout_ms = 250);
     void write_mouse_report(int buttons, int dx, int dy, int wheel, int timeout_ms = 250);
     void write_absolute_mouse_report(int buttons, int x, int y, int timeout_ms = 250);
+    void write_pointer_report(int buttons, int x, int y, int dx, int dy, int wheel, bool reliable_edge, int timeout_ms = 250);
     void release_all();
 
 private:
@@ -122,6 +130,12 @@ private:
     int absolute_mouse_fd_ = -1;
     int last_absolute_x_ = 16384;
     int last_absolute_y_ = 16384;
+    std::chrono::steady_clock::time_point next_absolute_retry_at_{};
+    std::string last_absolute_error_;
+
+    void close_absolute_mouse() noexcept;
+    void remember_absolute_error(const std::string& reason);
+    int clamp_relative_value(int value) const;
 };
 
 class LedController {

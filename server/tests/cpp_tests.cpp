@@ -260,6 +260,48 @@ void test_hid_reports() {
     fs::remove_all(root);
 }
 
+void test_hid_writer_allows_missing_absolute_mouse() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-absolute-missing-test-" + hidmi::random_b64url(8));
+    fs::create_directories(root);
+    fs::path keyboard = root / "kbd";
+    fs::path mouse = root / "mouse";
+    fs::path absolute = root / "missing-abs";
+    write_file(keyboard);
+    write_file(mouse);
+    {
+        hidmi::HidWriter writer(keyboard.string(), mouse.string(), absolute.string());
+        writer.open();
+        expect(writer.mandatory_available(), "mandatory HID devices should be available without absolute mouse");
+        expect(!writer.absolute_mouse_available(), "missing absolute mouse should be degraded");
+        expect(writer.absolute_mouse_degraded(), "missing absolute mouse should report degraded state");
+        writer.write_pointer_report(1, 300, 400, 7, -5, 3, true);
+        expect(read_file(mouse).substr(0, 4) == std::string("\x01\x07\xfb\x03", 4), "relative fallback pointer report mismatch");
+        writer.close();
+    }
+    fs::remove_all(root);
+}
+
+void test_hid_writer_reopens_absolute_mouse_after_degraded_start() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-absolute-reopen-test-" + hidmi::random_b64url(8));
+    fs::create_directories(root);
+    fs::path keyboard = root / "kbd";
+    fs::path mouse = root / "mouse";
+    fs::path absolute = root / "abs";
+    write_file(keyboard);
+    write_file(mouse);
+    {
+        hidmi::HidWriter writer(keyboard.string(), mouse.string(), absolute.string());
+        writer.open();
+        expect(!writer.absolute_mouse_available(), "absolute mouse should start degraded when path is absent");
+        write_file(absolute);
+        expect(writer.try_reopen_absolute(true), "absolute mouse should reopen after the path appears");
+        writer.write_pointer_report(2, 300, 400, 9, 9, 0, false);
+        expect(read_file(absolute).substr(0, 5) == std::string("\x02\x2c\x01\x90\x01", 5), "reopened absolute pointer report mismatch");
+        writer.close();
+    }
+    fs::remove_all(root);
+}
+
 void test_units() {
     hidmi::InstallPaths paths;
     auto service = hidmi::render_hidmi_service(paths);
@@ -522,6 +564,8 @@ int main() {
         test_protobuf_offer_hmac_and_absolute_scaling();
         test_tcp_error_message_normalization();
         test_hid_reports();
+        test_hid_writer_allows_missing_absolute_mouse();
+        test_hid_writer_reopens_absolute_mouse_after_degraded_start();
         test_units();
         test_led_idle_and_active_client();
         test_led_hid_and_protocol_states();

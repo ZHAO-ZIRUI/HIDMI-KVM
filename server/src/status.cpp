@@ -259,7 +259,7 @@ int print_status(const InstallPaths& paths, std::ostream& out) {
     StatusCell hid_keyboard = cfg ? hid_status(cfg->hid.keyboard_path, &hid_keyboard_ok) : red("ERR(config unavailable)");
     StatusCell hid_mouse = cfg ? hid_status(cfg->hid.mouse_path, &hid_mouse_ok) : red("ERR(config unavailable)");
     StatusCell hid_absolute = cfg ? hid_status(cfg->hid.absolute_mouse_path, &hid_absolute_ok) : red("ERR(config unavailable)");
-    bool hid_devices_ok = cfg && hid_keyboard_ok && hid_mouse_ok && hid_absolute_ok;
+    bool hid_devices_ok = cfg && hid_keyboard_ok && hid_mouse_ok;
 
     bool hid_available_ok = false;
     StatusCell hid_available = red("ERR(config unavailable)");

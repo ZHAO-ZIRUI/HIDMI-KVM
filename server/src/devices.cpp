@@ -10,6 +10,7 @@ namespace {
 constexpr double kAuthErrorBlinkDurationSec = 5.0;
 constexpr double kAuthErrorBlinkCadenceSec = 0.20;
 constexpr double kAuthErrorBlinkOnSec = 0.10;
+constexpr auto kAbsoluteMouseRetryInterval = std::chrono::seconds(3);
 
 }  // namespace
 
@@ -21,15 +22,13 @@ HidWriter::~HidWriter() {
 }
 
 void HidWriter::open() {
+    close_without_release();
     try {
         keyboard_fd_ = ::open(keyboard_path_.c_str(), O_WRONLY | O_NONBLOCK);
         if (keyboard_fd_ < 0) throw std::runtime_error("open keyboard HID: " + std::string(std::strerror(errno)));
         mouse_fd_ = ::open(mouse_path_.c_str(), O_WRONLY | O_NONBLOCK);
         if (mouse_fd_ < 0) throw std::runtime_error("open mouse HID: " + std::string(std::strerror(errno)));
-        if (!absolute_mouse_path_.empty()) {
-            absolute_mouse_fd_ = ::open(absolute_mouse_path_.c_str(), O_WRONLY | O_NONBLOCK);
-            if (absolute_mouse_fd_ < 0) throw std::runtime_error("open absolute mouse HID: " + std::string(std::strerror(errno)));
-        }
+        try_reopen_absolute(true);
     } catch (...) {
         close_without_release();
         throw;
@@ -52,7 +51,52 @@ void HidWriter::close() {
 void HidWriter::close_without_release() noexcept {
     if (keyboard_fd_ >= 0) { ::close(keyboard_fd_); keyboard_fd_ = -1; }
     if (mouse_fd_ >= 0) { ::close(mouse_fd_); mouse_fd_ = -1; }
-    if (absolute_mouse_fd_ >= 0) { ::close(absolute_mouse_fd_); absolute_mouse_fd_ = -1; }
+    close_absolute_mouse();
+}
+
+bool HidWriter::keyboard_available() const {
+    return keyboard_fd_ >= 0;
+}
+
+bool HidWriter::relative_mouse_available() const {
+    return mouse_fd_ >= 0;
+}
+
+bool HidWriter::absolute_mouse_available() const {
+    return absolute_mouse_fd_ >= 0;
+}
+
+bool HidWriter::mandatory_available() const {
+    return keyboard_available() && relative_mouse_available();
+}
+
+bool HidWriter::absolute_mouse_degraded() const {
+    return !absolute_mouse_path_.empty() && absolute_mouse_fd_ < 0;
+}
+
+const std::string& HidWriter::last_absolute_error() const {
+    return last_absolute_error_;
+}
+
+bool HidWriter::try_reopen_absolute(bool force) {
+    if (absolute_mouse_fd_ >= 0) return true;
+    if (absolute_mouse_path_.empty()) {
+        last_absolute_error_.clear();
+        return false;
+    }
+    auto now = std::chrono::steady_clock::now();
+    if (!force && next_absolute_retry_at_ != std::chrono::steady_clock::time_point{} && now < next_absolute_retry_at_) {
+        return false;
+    }
+    int fd = ::open(absolute_mouse_path_.c_str(), O_WRONLY | O_NONBLOCK);
+    if (fd < 0) {
+        remember_absolute_error("open absolute mouse HID: " + std::string(std::strerror(errno)));
+        return false;
+    }
+    absolute_mouse_fd_ = fd;
+    last_absolute_error_.clear();
+    next_absolute_retry_at_ = {};
+    return true;
 }
 
 void HidWriter::write_keyboard_report(int modifiers, const std::vector<int>& keys, int timeout_ms) {
@@ -86,10 +130,55 @@ void HidWriter::write_absolute_mouse_report(int buttons, int x, int y, int timeo
     write_fd_all(absolute_mouse_fd_, {static_cast<std::uint8_t>(buttons), static_cast<std::uint8_t>(x), static_cast<std::uint8_t>(x >> 8), static_cast<std::uint8_t>(y), static_cast<std::uint8_t>(y >> 8)}, timeout_ms);
 }
 
+void HidWriter::write_pointer_report(int buttons, int x, int y, int dx, int dy, int wheel, bool reliable_edge, int timeout_ms) {
+    if (buttons < 0 || buttons > 0x07) throw std::runtime_error("buttons must be 0..7");
+    dx = clamp_relative_value(dx);
+    dy = clamp_relative_value(dy);
+    wheel = clamp_relative_value(wheel);
+
+    bool wrote_absolute = false;
+    if (try_reopen_absolute(false)) {
+        try {
+            write_absolute_mouse_report(buttons, x, y, timeout_ms);
+            wrote_absolute = true;
+        } catch (const std::exception& exc) {
+            close_absolute_mouse();
+            remember_absolute_error(std::string("absolute mouse write failed: ") + exc.what());
+        }
+    }
+
+    if (!wrote_absolute) {
+        if (reliable_edge || dx != 0 || dy != 0 || wheel != 0) {
+            write_mouse_report(buttons, dx, dy, wheel, timeout_ms);
+        }
+        return;
+    }
+
+    if (wheel != 0) {
+        write_mouse_report(buttons, 0, 0, wheel, timeout_ms);
+    }
+}
+
 void HidWriter::release_all() {
     if (keyboard_fd_ >= 0) write_fd_all(keyboard_fd_, {0, 0, 0, 0, 0, 0, 0, 0});
     if (mouse_fd_ >= 0) write_fd_all(mouse_fd_, {0, 0, 0, 0});
     if (absolute_mouse_fd_ >= 0) write_fd_all(absolute_mouse_fd_, {0, static_cast<std::uint8_t>(last_absolute_x_), static_cast<std::uint8_t>(last_absolute_x_ >> 8), static_cast<std::uint8_t>(last_absolute_y_), static_cast<std::uint8_t>(last_absolute_y_ >> 8)});
+}
+
+void HidWriter::close_absolute_mouse() noexcept {
+    if (absolute_mouse_fd_ >= 0) {
+        ::close(absolute_mouse_fd_);
+        absolute_mouse_fd_ = -1;
+    }
+}
+
+void HidWriter::remember_absolute_error(const std::string& reason) {
+    last_absolute_error_ = reason;
+    next_absolute_retry_at_ = std::chrono::steady_clock::now() + kAbsoluteMouseRetryInterval;
+}
+
+int HidWriter::clamp_relative_value(int value) const {
+    return std::max(-127, std::min(127, value));
 }
 
 struct LedController::SysfsLed {
