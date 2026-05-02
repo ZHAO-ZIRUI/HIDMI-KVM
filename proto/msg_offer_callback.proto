@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+import "enum_offer_reject_reason.proto";
+
+message OfferCallback {
+  fixed64 server_id = 1;
+  fixed64 boot_id = 2;
+
+  bool accept = 10;
+  OfferRejectReason reject_reason = 11;
+
+  fixed64 session_id = 20;
+  uint32 connect_deadline_ms = 21;
+}

@@ -1,0 +1,2 @@
+"NSCameraUsageDescription" = "HIDMI KVM 需要通过 HDMI 采集显示目标计算机画面。";
+"NSLocalNetworkUsageDescription" = "HIDMI KVM 需要通过本地网络连接 HIDMI KVM 设备以执行 USB HID 模拟。";

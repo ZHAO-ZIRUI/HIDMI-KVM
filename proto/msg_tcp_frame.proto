@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+import "enum_channel_id.proto";
+import "msg_ack.proto";
+import "msg_channel_open.proto";
+import "msg_channel_ready.proto";
+import "msg_error.proto";
+import "msg_goodbye.proto";
+import "msg_goodbye_ack.proto";
+import "msg_heartbeat.proto";
+import "msg_heartbeat_ack.proto";
+import "msg_keyboard_special.proto";
+import "msg_keyboard_state.proto";
+import "msg_mouse_state.proto";
+import "msg_release_all.proto";
+
+message TcpFrame {
+  fixed64 session_id = 1;
+  ChannelId channel_id = 2;
+  uint32 seq = 3;
+  fixed64 monotonic_us = 4;
+  bool ack_required = 5;
+
+  oneof body {
+    ChannelOpen channel_open = 10;
+    ChannelReady channel_ready = 11;
+
+    Heartbeat heartbeat = 20;
+    HeartbeatAck heartbeat_ack = 21;
+    Ack ack = 22;
+
+    ReleaseAll release_all = 30;
+    Goodbye goodbye = 31;
+    GoodbyeAck goodbye_ack = 32;
+    Error error = 33;
+
+    MouseState mouse_state = 40;
+
+    KeyboardState keyboard_state = 50;
+    KeyboardSpecial keyboard_special = 51;
+  }
+}

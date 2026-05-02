@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+message KeyboardState {
+  uint32 modifier_mask = 1;
+  repeated uint32 pressed_usage_ids = 2;
+}

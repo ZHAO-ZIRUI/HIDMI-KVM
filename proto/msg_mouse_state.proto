@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+message MouseState {
+  uint32 abs_x = 1;
+  uint32 abs_y = 2;
+  fixed64 buttons_mask = 3;
+  sint32 wheel_delta_y = 4;
+  sint32 wheel_delta_x = 5;
+  bool has_reliable_edge = 6;
+  fixed64 sample_mono_us = 7;
+}

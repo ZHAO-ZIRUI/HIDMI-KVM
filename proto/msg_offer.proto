@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+message Offer {
+  fixed64 server_id = 1;
+  fixed64 boot_id = 2;
+
+  fixed64 client_id = 3;
+  bytes client_nonce = 4;
+  fixed64 client_unix_ms = 5;
+
+  fixed32 control_tcp_port = 10;
+  fixed32 mouse_tcp_port = 11;
+  fixed32 keyboard_tcp_port = 12;
+
+  bytes auth_mac = 20;
+}

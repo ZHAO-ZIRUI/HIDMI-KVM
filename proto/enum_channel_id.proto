@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+enum ChannelId {
+  CHANNEL_UNSPECIFIED = 0;
+  CHANNEL_CONTROL = 1;
+  CHANNEL_MOUSE = 2;
+  CHANNEL_KEYBOARD = 3;
+}

@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+import "enum_ack_result.proto";
+import "enum_channel_id.proto";
+
+message Ack {
+  ChannelId target_channel_id = 1;
+  uint32 target_seq = 2;
+  AckResult result = 3;
+  string message = 4;
+}

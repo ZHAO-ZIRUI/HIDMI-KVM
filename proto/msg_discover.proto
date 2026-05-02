@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+import "enum_interface_type.proto";
+
+message Discover {
+  fixed64 server_id = 1;
+  fixed64 boot_id = 2;
+  string server_name = 3;
+  InterfaceType interface_type = 4;
+
+  fixed32 tcp_accept_min = 10;
+  fixed32 tcp_accept_max = 11;
+  repeated fixed32 tcp_rejected = 12;
+
+  bytes challenge_nonce = 20;
+  bool is_busy = 21;
+}

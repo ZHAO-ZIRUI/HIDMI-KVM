@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+message Heartbeat {
+  uint32 heartbeat_seq = 1;
+  fixed64 client_send_mono_us = 2;
+}

@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+enum KeyboardSpecialId {
+  KEYBOARD_SPECIAL_UNSPECIFIED = 0;
+  KEYBOARD_SPECIAL_CTRL_ALT_DEL = 1;
+  KEYBOARD_SPECIAL_ALT_F4 = 2;
+  KEYBOARD_SPECIAL_CMD_TAB = 3;
+}

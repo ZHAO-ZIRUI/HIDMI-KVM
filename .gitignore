@@ -1,0 +1,26 @@
+# Deployment artifacts
+/build/
+devtools/build/
+
+# MacOS
+.DS_Store
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Xcode
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.ipa
+*.dSYM/
+
+# AI Agents
+agents/
+.agents/
+.codex
+AGENTS.md

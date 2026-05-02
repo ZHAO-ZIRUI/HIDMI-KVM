@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+import "msg_discover.proto";
+import "msg_offer.proto";
+import "msg_offer_callback.proto";
+
+message UdpPacket {
+  uint32 protocol_version = 1;
+
+  oneof body {
+    Discover discover = 10;
+    Offer offer = 11;
+    OfferCallback offer_callback = 12;
+  }
+}

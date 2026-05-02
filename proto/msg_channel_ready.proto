@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+import "enum_channel_id.proto";
+
+message ChannelReady {
+  ChannelId channel_id = 1;
+  bool accepted = 2;
+  string message = 3;
+}

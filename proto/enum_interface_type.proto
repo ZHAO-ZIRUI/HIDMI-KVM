@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+enum InterfaceType {
+  IFACE_UNKNOWN = 0;
+  IFACE_ETHERNET = 1;
+  IFACE_WLAN = 2;
+}

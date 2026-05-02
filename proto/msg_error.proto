@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+import "enum_channel_id.proto";
+import "enum_error_severity.proto";
+
+message Error {
+  uint32 err_id = 1;
+  ErrorSeverity severity = 2;
+  ChannelId channel_id = 3;
+  uint32 related_seq = 4;
+  string err_msg = 5;
+}

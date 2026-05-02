@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+enum OfferRejectReason {
+  OFFER_REJECT_NONE = 0;
+  TOKEN_AUTH_FAILED = 1;
+  TCP_OCCUPIED = 2;
+  SERVER_ID_MISMATCH = 3;
+  SERVER_BUSY = 4;
+  PROTOCOL_VERSION_MISMATCH = 5;
+  INVALID_PORT = 6;
+  INTERNAL_ERROR = 7;
+}

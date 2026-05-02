@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+import "enum_keyboard_special_id.proto";
+
+message KeyboardSpecial {
+  KeyboardSpecialId spec_id = 1;
+  bool release_before = 2;
+  bool restore_previous_state = 3;
+}

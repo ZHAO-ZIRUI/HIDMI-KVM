@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+enum ErrorSeverity {
+  ERROR_INFO = 0;
+  ERROR_WARNING = 1;
+  ERROR_FATAL = 2;
+}

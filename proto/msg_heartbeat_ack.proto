@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+message HeartbeatAck {
+  uint32 heartbeat_seq = 1;
+  fixed64 client_send_mono_us = 2;
+  fixed64 server_recv_mono_us = 3;
+  fixed64 server_send_mono_us = 4;
+}

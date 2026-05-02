@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+message ReleaseAll {
+  string reason = 1;
+}

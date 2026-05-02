@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package hidmi.kvm.input.v1;
+
+enum AckResult {
+  ACK_OK = 0;
+  ACK_DUPLICATED = 1;
+  ACK_REJECTED = 2;
+}

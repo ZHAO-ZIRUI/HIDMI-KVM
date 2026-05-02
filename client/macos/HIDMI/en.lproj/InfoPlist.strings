@@ -1,0 +1,2 @@
+"NSCameraUsageDescription" = "HIDMI KVM uses HDMI capture to display the target computer video input.";
+"NSLocalNetworkUsageDescription" = "HIDMI KVM connects to HIDMI KVM devices for USB HID emulation on the local network.";
