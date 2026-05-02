@@ -36,6 +36,7 @@
 "hid.device.connect_this_device" = "Connect This Device";
 "hid.device.disconnect_this_device" = "Disconnect This Device";
 "hid.device.eth_device" = "Local Network Device";
+"hid.device.wlan_device" = "Wi-Fi Network Device";
 "hid.device.usb_device" = "USB Device";
 "hid.device.ip_addr" = "IP: %@";
 "hid.device.usb_interface" = "Device: %@";

@@ -269,6 +269,16 @@ void test_tcp_business_frames_require_active_session() {
         "goodbye should be allowed to clean up before activation");
 }
 
+void test_interface_type_from_name() {
+    expect(hidmi::internal::interface_type_from_name("eth0") == hidpb::IFACE_ETHERNET, "eth interface should map to Ethernet");
+    expect(hidmi::internal::interface_type_from_name("enp1s0") == hidpb::IFACE_ETHERNET, "enp interface should map to Ethernet");
+    expect(hidmi::internal::interface_type_from_name("eno1") == hidpb::IFACE_ETHERNET, "eno interface should map to Ethernet");
+    expect(hidmi::internal::interface_type_from_name("wlan0") == hidpb::IFACE_WLAN, "wlan interface should map to WLAN");
+    expect(hidmi::internal::interface_type_from_name("wlp2s0") == hidpb::IFACE_WLAN, "wlp interface should map to WLAN");
+    expect(hidmi::internal::interface_type_from_name("wifi0") == hidpb::IFACE_WLAN, "wifi interface should map to WLAN");
+    expect(hidmi::internal::interface_type_from_name("usb0") == hidpb::IFACE_UNKNOWN, "unknown interface should map to unknown");
+}
+
 void test_hid_reports() {
     fs::path root = fs::temp_directory_path() / ("hidmi-test-" + hidmi::random_b64url(8));
     fs::create_directories(root);
@@ -660,6 +670,7 @@ int main() {
         test_protobuf_offer_hmac_and_absolute_scaling();
         test_tcp_error_message_normalization();
         test_tcp_business_frames_require_active_session();
+        test_interface_type_from_name();
         test_hid_reports();
         test_hid_writer_allows_missing_absolute_mouse();
         test_hid_writer_reopens_absolute_mouse_after_degraded_start();

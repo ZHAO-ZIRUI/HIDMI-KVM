@@ -36,6 +36,7 @@
 "hid.device.connect_this_device" = "连接该设备";
 "hid.device.disconnect_this_device" = "断开该设备";
 "hid.device.eth_device" = "局域网设备";
+"hid.device.wlan_device" = "无线局域网设备";
 "hid.device.usb_device" = "USB 设备";
 "hid.device.ip_addr" = "IP：%@";
 "hid.device.usb_interface" = "设备：%@";

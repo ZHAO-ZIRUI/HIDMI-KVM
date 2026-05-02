@@ -3,6 +3,8 @@
 #include "msg_udp_packet.pb.h"
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/tcp.h>
 
 namespace fs = std::filesystem;
@@ -42,6 +44,14 @@ struct SocketReadTimeout : std::runtime_error {
 
 struct SocketPeerClosed : std::runtime_error {
     using std::runtime_error::runtime_error;
+};
+
+struct BroadcastInterface {
+    std::string name;
+    sockaddr_in broadcast_addr{};
+    in_addr source_addr{};
+    unsigned int if_index = 0;
+    pb::InterfaceType type = pb::IFACE_UNKNOWN;
 };
 
 void close_fd(int& fd) {
@@ -219,6 +229,82 @@ int bind_tcp_listener_exact(int port) {
         throw std::runtime_error(std::strerror(errno));
     }
     return fd;
+}
+
+std::vector<BroadcastInterface> enumerate_broadcast_interfaces(int udp_port) {
+    std::vector<BroadcastInterface> interfaces;
+    ifaddrs* list = nullptr;
+    if (::getifaddrs(&list) == 0 && list) {
+        std::set<std::pair<std::string, std::uint32_t>> seen;
+        for (ifaddrs* item = list; item; item = item->ifa_next) {
+            if (!item->ifa_name || !item->ifa_addr || !item->ifa_broadaddr) continue;
+            if (item->ifa_addr->sa_family != AF_INET || item->ifa_broadaddr->sa_family != AF_INET) continue;
+            auto flags = item->ifa_flags;
+            if ((flags & IFF_UP) == 0 || (flags & IFF_LOOPBACK) != 0 || (flags & IFF_BROADCAST) == 0) continue;
+
+            auto broadcast = *reinterpret_cast<sockaddr_in*>(item->ifa_broadaddr);
+            broadcast.sin_port = htons(static_cast<std::uint16_t>(udp_port));
+            std::string name(item->ifa_name);
+            auto key = std::make_pair(name, broadcast.sin_addr.s_addr);
+            if (!seen.insert(key).second) continue;
+            interfaces.push_back(BroadcastInterface{
+                name,
+                broadcast,
+                reinterpret_cast<sockaddr_in*>(item->ifa_addr)->sin_addr,
+                ::if_nametoindex(name.c_str()),
+                static_cast<pb::InterfaceType>(internal::interface_type_from_name(name))
+            });
+        }
+        ::freeifaddrs(list);
+    }
+
+    if (interfaces.empty()) {
+        sockaddr_in dest{};
+        dest.sin_family = AF_INET;
+        dest.sin_port = htons(static_cast<std::uint16_t>(udp_port));
+        dest.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+        interfaces.push_back(BroadcastInterface{"", dest, {}, 0, pb::IFACE_UNKNOWN});
+    }
+    return interfaces;
+}
+
+void send_discover_datagram(int fd, const std::string& payload, const BroadcastInterface& target) {
+#if defined(__linux__) && defined(IP_PKTINFO)
+    if (target.if_index != 0) {
+        iovec iov{};
+        iov.iov_base = const_cast<char*>(payload.data());
+        iov.iov_len = payload.size();
+
+        char control[CMSG_SPACE(sizeof(in_pktinfo))]{};
+        msghdr message{};
+        message.msg_name = const_cast<sockaddr_in*>(&target.broadcast_addr);
+        message.msg_namelen = sizeof(target.broadcast_addr);
+        message.msg_iov = &iov;
+        message.msg_iovlen = 1;
+        message.msg_control = control;
+        message.msg_controllen = sizeof(control);
+
+        cmsghdr* cmsg = CMSG_FIRSTHDR(&message);
+        cmsg->cmsg_level = IPPROTO_IP;
+        cmsg->cmsg_type = IP_PKTINFO;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(in_pktinfo));
+        auto* info = reinterpret_cast<in_pktinfo*>(CMSG_DATA(cmsg));
+        info->ipi_ifindex = static_cast<int>(target.if_index);
+        info->ipi_spec_dst = target.source_addr;
+
+        if (::sendmsg(fd, &message, 0) >= 0) {
+            return;
+        }
+    }
+#endif
+    ::sendto(
+        fd,
+        payload.data(),
+        payload.size(),
+        0,
+        reinterpret_cast<const sockaddr*>(&target.broadcast_addr),
+        sizeof(target.broadcast_addr)
+    );
 }
 
 std::uint64_t buttons_mask_to_int(std::uint64_t mask) {
@@ -439,38 +525,36 @@ void Daemon::broadcast_discover() {
         }
     }
 
-    pb::UdpPacket packet;
-    packet.set_protocol_version(kProtoVersion);
-    auto* discover = packet.mutable_discover();
-    discover->set_server_id(server_id_);
-    discover->set_boot_id(boot_id_);
-    discover->set_server_name(config_.display_name);
-    discover->set_interface_type(pb::IFACE_ETHERNET);
-    discover->set_tcp_accept_min(kMinTcpPort);
-    discover->set_tcp_accept_max(kMaxTcpPort);
-    discover->set_challenge_nonce(challenge_nonce_);
-    discover->set_is_busy(busy);
-    discover->set_hid_status(hid_status);
-    discover->set_hid_available(hid_available);
-    discover->set_absolute_pointer_available(absolute_available);
-    discover->set_relative_pointer_available(relative_available);
-    if (hid_available) {
-        discover->add_capabilities("keyboard");
-        discover->add_capabilities("mouse");
-        discover->add_capabilities("release_all");
-        discover->add_capabilities("relative_pointer");
-        if (absolute_available) {
-            discover->add_capabilities("absolute_pointer");
+    for (const auto& target : enumerate_broadcast_interfaces(config_.udp_port)) {
+        pb::UdpPacket packet;
+        packet.set_protocol_version(kProtoVersion);
+        auto* discover = packet.mutable_discover();
+        discover->set_server_id(server_id_);
+        discover->set_boot_id(boot_id_);
+        discover->set_server_name(config_.display_name);
+        discover->set_interface_type(target.type);
+        discover->set_tcp_accept_min(kMinTcpPort);
+        discover->set_tcp_accept_max(kMaxTcpPort);
+        discover->set_challenge_nonce(challenge_nonce_);
+        discover->set_is_busy(busy);
+        discover->set_hid_status(hid_status);
+        discover->set_hid_available(hid_available);
+        discover->set_absolute_pointer_available(absolute_available);
+        discover->set_relative_pointer_available(relative_available);
+        if (hid_available) {
+            discover->add_capabilities("keyboard");
+            discover->add_capabilities("mouse");
+            discover->add_capabilities("release_all");
+            discover->add_capabilities("relative_pointer");
+            if (absolute_available) {
+                discover->add_capabilities("absolute_pointer");
+            }
         }
-    }
 
-    std::string payload;
-    if (!packet.SerializeToString(&payload)) return;
-    sockaddr_in dest{};
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(static_cast<std::uint16_t>(config_.udp_port));
-    dest.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-    ::sendto(udp_fd_, payload.data(), payload.size(), 0, reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+        std::string payload;
+        if (!packet.SerializeToString(&payload)) continue;
+        send_discover_datagram(udp_fd_, payload, target);
+    }
 }
 
 bool Daemon::usb_configured_for_hid() const {

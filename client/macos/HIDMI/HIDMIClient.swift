@@ -6,6 +6,7 @@ import SwiftProtobuf
 
 enum HIDMIDeviceTransport: Equatable, Sendable {
     case ethernet
+    case wlan
     case usb
 }
 
@@ -646,6 +647,7 @@ enum HIDMIClient {
         } else {
             availability = .hidUnavailable
         }
+        let transport: HIDMIDeviceTransport = discover.interfaceType == .ifaceWlan ? .wlan : .ethernet
 
         return HIDMIDevice(
             host: host,
@@ -660,6 +662,7 @@ enum HIDMIClient {
             requiresAuth: false,
             capabilities: capabilities,
             availability: availability,
+            transport: transport,
             serverID: discover.serverID,
             bootID: discover.bootID,
             challengeNonce: discover.challengeNonce,

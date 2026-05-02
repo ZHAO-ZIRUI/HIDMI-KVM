@@ -39,7 +39,7 @@ struct HIDMIDiscoveredDevice: Identifiable, Equatable, Sendable {
 
     var connectionAddressSummary: String {
         switch transport {
-        case .ethernet:
+        case .ethernet, .wlan:
             return host.isEmpty ? id : host
         case .usb:
             if let trimmed = usbInterface?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
@@ -60,6 +60,17 @@ struct HIDMIDiscoveredDevice: Identifiable, Equatable, Sendable {
                 HIDMIMenuDeviceDetail(
                     kind: .transport,
                     title: String(localized: "hid.device.eth_device")
+                ),
+                HIDMIMenuDeviceDetail(
+                    kind: .ipAddress,
+                    title: String(format: String(localized: "hid.device.ip_addr"), host)
+                )
+            ]
+        case .wlan:
+            return [
+                HIDMIMenuDeviceDetail(
+                    kind: .transport,
+                    title: String(localized: "hid.device.wlan_device")
                 ),
                 HIDMIMenuDeviceDetail(
                     kind: .ipAddress,

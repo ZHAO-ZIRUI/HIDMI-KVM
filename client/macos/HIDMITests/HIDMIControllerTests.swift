@@ -2110,6 +2110,47 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertTrue(device.capabilities.isEmpty)
     }
 
+    func testDiscoverParsesWLANInterfaceType() throws {
+        let discover = Hidmi_Kvm_Input_V1_Discover.with {
+            $0.serverID = 123
+            $0.bootID = 456
+            $0.serverName = "Rack KVM"
+            $0.interfaceType = .ifaceWlan
+            $0.tcpAcceptMin = 10_000
+            $0.tcpAcceptMax = 60_999
+            $0.challengeNonce = Data(repeating: 7, count: 16)
+            $0.hidStatus = .ready
+            $0.hidAvailable = true
+            $0.relativePointerAvailable = true
+            $0.capabilities = ["keyboard", "mouse", "release_all", "relative_pointer"]
+        }
+
+        let device = try HIDMIClient.device(
+            fromDiscover: discover,
+            host: "192.168.1.10",
+            udpPort: HIDMIClient.defaultUDPPort,
+            client: ClientIdentity(id: 42, nonce: Data(repeating: 1, count: 16))
+        )
+
+        XCTAssertEqual(device.transport, .wlan)
+        XCTAssertEqual(HIDMIDiscoveredDevice(device: device, lastSeen: Date()).menuDetails().first?.title, String(localized: "hid.device.wlan_device"))
+    }
+
+    func testMultipleInterfaceDiscoversMergeByDiscoveryID() {
+        let controller = HIDMIController(
+            worker: FakeHIDMIWorker(),
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt()
+        )
+        let ethernet = makeDevice(id: "device-a", host: "192.168.1.10", transport: .ethernet)
+        let wlan = makeDevice(id: "device-a", host: "192.168.1.11", transport: .wlan)
+
+        controller.mergeDiscoveredDevices([ethernet, wlan], seenAt: Date())
+
+        XCTAssertEqual(controller.discoveredDevices.count, 1)
+        XCTAssertEqual(controller.discoveredDevices.first?.id, "device-a")
+    }
+
     func testInvalidSessionPortThrowsRecoverableError() {
         XCTAssertThrowsError(try HIDMISession(host: "127.0.0.1", port: 70_000, timeout: 0.01)) { error in
             XCTAssertTrue(error.localizedDescription.contains("port"))

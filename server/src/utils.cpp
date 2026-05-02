@@ -40,6 +40,20 @@ bool starts_with(const std::string& value, const std::string& prefix) {
     return value.rfind(prefix, 0) == 0;
 }
 
+int interface_type_from_name(std::string_view name) {
+    std::string lower(name);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (starts_with(lower, "wl") || starts_with(lower, "wlan") || starts_with(lower, "wifi") || starts_with(lower, "wlp")) {
+        return 2;
+    }
+    if (starts_with(lower, "eth") || starts_with(lower, "en") || starts_with(lower, "eno") || starts_with(lower, "end") || starts_with(lower, "enp")) {
+        return 1;
+    }
+    return 0;
+}
+
 bool is_hid_error_message(const std::string& message) {
     std::string lower = message;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {

@@ -25,6 +25,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -91,6 +92,7 @@ std::string offer_auth_payload(
 bool valid_offer_tcp_ports(std::uint32_t control, std::uint32_t mouse, std::uint32_t keyboard);
 int protocol_absolute_to_hid(std::uint32_t value);
 bool tcp_frame_body_requires_active_session(int channel_id, int body_case);
+int interface_type_from_name(std::string_view name);
 bool is_hid_error_message(const std::string& message);
 std::string normalize_tcp_error_message(const std::string& message);
 std::string active_trigger(const std::string& text);
