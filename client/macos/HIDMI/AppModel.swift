@@ -179,7 +179,9 @@ final class AppModel: ObservableObject {
     private let cameraPermissionRequestTimeoutInterval: TimeInterval
     let hidmi: HIDMIController
     private var cancellables = Set<AnyCancellable>()
+    private var windowStateCancellables = Set<AnyCancellable>()
     private var menuTrackingDelegates = [ObjectIdentifier: AppMenuTrackingDelegate]()
+    private weak var observedWindow: NSWindow?
     private var remoteInput = RemoteInputMapper()
     private var didStart = false
     private var nextConfigurationGeneration: UInt64 = 0
@@ -202,6 +204,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var tokenUnlockError: String?
     @Published private(set) var frameReportGeneration: UInt64 = 0
     @Published private(set) var isRemoteInputSuspendedByMenu = false
+    @Published private(set) var isMainWindowFullScreen = false
 
     static func makeForCurrentEnvironment() -> AppModel {
         #if DEBUG
@@ -247,6 +250,10 @@ final class AppModel: ObservableObject {
     var isOriginalInputMode: Bool {
         guard case .scaled(let scale) = previewMode else { return false }
         return abs(scale - 1.0) < 0.0001
+    }
+
+    var previewTopReservedHeight: CGFloat {
+        PreviewLayout.topReservedHeight(isFullScreen: isMainWindowFullScreen)
     }
 
     var overlayMessage: String? {
@@ -354,6 +361,7 @@ final class AppModel: ObservableObject {
 
     func attach(window: NSWindow) {
         windowController.attach(window)
+        observeWindowStateIfNeeded(window)
         installMenuTrackingDelegates()
     }
 
@@ -417,16 +425,6 @@ final class AppModel: ObservableObject {
 
     func fitToWindow() {
         previewMode = .fit
-    }
-
-    func zoomIn() {
-        let next = currentScale * 1.25
-        previewMode = .scaled(min(next, 8.0))
-    }
-
-    func zoomOut() {
-        let next = currentScale / 1.25
-        previewMode = .scaled(max(next, 0.125))
     }
 
     func showOriginalInput() {
@@ -657,17 +655,40 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private var currentScale: CGFloat {
-        if case .scaled(let scale) = previewMode {
-            scale
-        } else {
-            1.0
-        }
-    }
-
     private func resetRemoteInputLocally() {
         LocalCursorState.shared.setHidden(false)
         _ = remoteInput.reset()
+    }
+
+    private func observeWindowStateIfNeeded(_ window: NSWindow) {
+        guard observedWindow !== window else {
+            updateMainWindowFullScreenState(from: window)
+            return
+        }
+
+        observedWindow = window
+        windowStateCancellables.removeAll()
+        updateMainWindowFullScreenState(from: window)
+
+        NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification, object: window)
+            .sink { [weak self, weak window] _ in
+                guard let window else { return }
+                self?.updateMainWindowFullScreenState(from: window)
+            }
+            .store(in: &windowStateCancellables)
+
+        NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification, object: window)
+            .sink { [weak self, weak window] _ in
+                guard let window else { return }
+                self?.updateMainWindowFullScreenState(from: window)
+            }
+            .store(in: &windowStateCancellables)
+    }
+
+    private func updateMainWindowFullScreenState(from window: NSWindow) {
+        let nextValue = window.styleMask.contains(.fullScreen)
+        guard isMainWindowFullScreen != nextValue else { return }
+        isMainWindowFullScreen = nextValue
     }
 
     private func resetFrameObservationState(clearInputSize: Bool) {

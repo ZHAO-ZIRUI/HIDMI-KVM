@@ -6,6 +6,14 @@ enum PreviewMode: Equatable, Sendable {
     case scaled(CGFloat)
 }
 
+enum PreviewLayout {
+    static let nonFullScreenTopReservedHeight: CGFloat = 32
+
+    static func topReservedHeight(isFullScreen: Bool) -> CGFloat {
+        isFullScreen ? 0 : nonFullScreenTopReservedHeight
+    }
+}
+
 enum PreviewSizing {
     static func frameSize(
         mode: PreviewMode,
@@ -14,23 +22,64 @@ enum PreviewSizing {
         backingScaleFactor: CGFloat
     ) -> CGSize {
         let scaleFactor = max(backingScaleFactor, 1)
+        let availableSize = pixelAligned(
+            CGSize(
+                width: max(availableSize.width, 1),
+                height: max(availableSize.height, 1)
+            ),
+            backingScaleFactor: scaleFactor
+        )
         switch mode {
         case .fit:
-            return pixelAligned(availableSize, backingScaleFactor: scaleFactor)
+            guard let inputSize,
+                  inputSize.width > 0,
+                  inputSize.height > 0 else {
+                return availableSize
+            }
+            return aspectFitSize(
+                sourceSize: inputSize,
+                destinationSize: availableSize,
+                backingScaleFactor: scaleFactor
+            )
         case .scaled(let scale):
             guard let inputSize,
                   inputSize.width > 0,
                   inputSize.height > 0 else {
-                return pixelAligned(availableSize, backingScaleFactor: scaleFactor)
+                return availableSize
             }
+            let requestedSize = CGSize(
+                width: max((inputSize.width / scaleFactor) * scale, 1),
+                height: max((inputSize.height / scaleFactor) * scale, 1)
+            )
+            let fitScale = min(
+                1,
+                availableSize.width / requestedSize.width,
+                availableSize.height / requestedSize.height
+            )
             return pixelAligned(
-                CGSize(
-                    width: max((inputSize.width / scaleFactor) * scale, 1),
-                    height: max((inputSize.height / scaleFactor) * scale, 1)
-                ),
+                CGSize(width: requestedSize.width * fitScale, height: requestedSize.height * fitScale),
                 backingScaleFactor: scaleFactor
             )
         }
+    }
+
+    static func aspectFitSize(
+        sourceSize: CGSize,
+        destinationSize: CGSize,
+        backingScaleFactor: CGFloat
+    ) -> CGSize {
+        guard sourceSize.width > 0,
+              sourceSize.height > 0,
+              destinationSize.width > 0,
+              destinationSize.height > 0 else {
+            return pixelAligned(destinationSize, backingScaleFactor: backingScaleFactor)
+        }
+
+        let scale = min(destinationSize.width / sourceSize.width, destinationSize.height / sourceSize.height)
+        return pixelAligned(
+            CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale),
+            backingScaleFactor: backingScaleFactor
+        )
     }
 
     static func pixelAligned(_ size: CGSize, backingScaleFactor: CGFloat) -> CGSize {
@@ -75,25 +124,29 @@ enum WindowResizePlanning {
     static func originalInputContentSize(
         inputSize: CGSize,
         backingScaleFactor: CGFloat,
-        visibleFrame: CGRect
+        visibleFrame: CGRect,
+        topReservedHeight: CGFloat
     ) -> CGSize {
         let scaleFactor = max(backingScaleFactor, 1)
+        let topReservedHeight = max(topReservedHeight, 0)
         let requestedSize = CGSize(
             width: inputSize.width / scaleFactor,
             height: inputSize.height / scaleFactor
         )
+        let availableVideoHeight = max(visibleFrame.height - topReservedHeight, 1)
         let fitScale = min(
             1,
             visibleFrame.width / max(requestedSize.width, 1),
-            visibleFrame.height / max(requestedSize.height, 1)
+            availableVideoHeight / max(requestedSize.height, 1)
         )
-        return PreviewSizing.pixelAligned(
+        let videoSize = PreviewSizing.pixelAligned(
             CGSize(
                 width: requestedSize.width * fitScale,
                 height: requestedSize.height * fitScale
             ),
             backingScaleFactor: scaleFactor
         )
+        return CGSize(width: videoSize.width, height: videoSize.height + topReservedHeight)
     }
 
     static func framePreservingTopLeft(

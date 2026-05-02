@@ -995,8 +995,13 @@ final class HIDMIControllerTests: XCTestCase {
                 availableSize: CGSize(width: 100.75, height: 80.75),
                 backingScaleFactor: 2
             ),
-            CGSize(width: 100.5, height: 80.5)
+            CGSize(width: 100.5, height: 56.5)
         )
+    }
+
+    func testPreviewLayoutTopReservedHeightOnlyAppliesOutsideFullScreen() {
+        XCTAssertEqual(PreviewLayout.topReservedHeight(isFullScreen: false), 32)
+        XCTAssertEqual(PreviewLayout.topReservedHeight(isFullScreen: true), 0)
     }
 
     func testPreviewRenderGeometryAlignsDrawableAndAspectFitRectToPhysicalPixels() {
@@ -1238,9 +1243,26 @@ final class HIDMIControllerTests: XCTestCase {
         let contentSize = WindowResizePlanning.originalInputContentSize(
             inputSize: CGSize(width: 3840, height: 2160),
             backingScaleFactor: 2,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            topReservedHeight: 32
         )
-        XCTAssertEqual(contentSize, CGSize(width: 1920, height: 1080))
+        XCTAssertEqual(contentSize, CGSize(width: 1920, height: 1112))
+
+        let fullScreenContentSize = WindowResizePlanning.originalInputContentSize(
+            inputSize: CGSize(width: 3840, height: 2160),
+            backingScaleFactor: 2,
+            visibleFrame: visibleFrame,
+            topReservedHeight: 0
+        )
+        XCTAssertEqual(fullScreenContentSize, CGSize(width: 1920, height: 1080))
+
+        let heightConstrained = WindowResizePlanning.originalInputContentSize(
+            inputSize: CGSize(width: 3840, height: 2160),
+            backingScaleFactor: 2,
+            visibleFrame: CGRect(x: 0, y: 0, width: 2000, height: 900),
+            topReservedHeight: 32
+        )
+        XCTAssertEqual(heightConstrained, CGSize(width: 1543, height: 900))
 
         let frame = WindowResizePlanning.framePreservingTopLeft(
             oldFrame: CGRect(x: 120, y: 240, width: 640, height: 360),
@@ -1278,6 +1300,7 @@ final class HIDMIControllerTests: XCTestCase {
         controller.rebuildMenu()
 
         let items = controller.menu.items
+        XCTAssertEqual(items.count, 8)
         XCTAssertEqual(items[0].title, String(localized: "device.none"))
         XCTAssertTrue(items[1].isSeparatorItem)
         XCTAssertEqual(items[2].title, String(localized: "format.device_options"))
@@ -1287,9 +1310,7 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertEqual(items[5].state, .off)
         XCTAssertEqual(items[6].title, String(localized: "view.fit_to_window"))
         XCTAssertEqual(items[6].state, .on)
-        XCTAssertEqual(items[7].title, String(localized: "view.zoom_in"))
-        XCTAssertEqual(items[8].title, String(localized: "view.zoom_out"))
-        XCTAssertEqual(items[9].action, #selector(NSWindow.toggleFullScreen(_:)))
+        XCTAssertEqual(items[7].action, #selector(NSWindow.toggleFullScreen(_:)))
         assertNoImages(in: controller.menu)
     }
 
@@ -1302,12 +1323,11 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertEqual(controller.menu.items[5].state, .off)
         XCTAssertEqual(controller.menu.items[6].state, .on)
 
-        model.zoomIn()
-        controller.rebuildMenu()
-        XCTAssertEqual(controller.menu.items[5].state, .off)
-        XCTAssertEqual(controller.menu.items[6].state, .off)
-
-        model.zoomOut()
+        model.updateActualVideoFrame(CaptureFrameDescriptor(
+            dimensions: VideoDimensions(width: 3840, height: 2160),
+            pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        ))
+        model.showOriginalInput()
         controller.rebuildMenu()
         XCTAssertEqual(controller.menu.items[5].state, .on)
         XCTAssertEqual(controller.menu.items[6].state, .off)

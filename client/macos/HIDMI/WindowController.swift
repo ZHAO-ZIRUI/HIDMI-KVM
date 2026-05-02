@@ -51,7 +51,8 @@ final class WindowController {
         let contentSize = WindowResizePlanning.originalInputContentSize(
             inputSize: inputSize,
             backingScaleFactor: window.backingScaleFactor,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            topReservedHeight: PreviewLayout.topReservedHeight(isFullScreen: window.styleMask.contains(.fullScreen))
         )
         let contentRect = NSRect(origin: .zero, size: contentSize)
         let proposedFrame = window.frameRect(forContentRect: contentRect)

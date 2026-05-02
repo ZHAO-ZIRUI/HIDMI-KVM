@@ -80,16 +80,6 @@ struct HIDMIViewCommands: Commands {
 
             Toggle(String(localized: "view.fit_to_window"), isOn: fitToWindowMode)
                 .keyboardShortcut("9", modifiers: .command)
-
-            Button(String(localized: "view.zoom_in")) {
-                model.zoomIn()
-            }
-            .keyboardShortcut("+", modifiers: .command)
-
-            Button(String(localized: "view.zoom_out")) {
-                model.zoomOut()
-            }
-            .keyboardShortcut("-", modifiers: .command)
         }
     }
 

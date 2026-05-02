@@ -13,8 +13,6 @@
 
 "view.original_input" = "原始输入";
 "view.fit_to_window" = "适合窗口";
-"view.zoom_in" = "放大";
-"view.zoom_out" = "缩小";
 "view.enter_full_screen" = "进入全屏幕";
 "view.exit_full_screen" = "退出全屏幕";
 

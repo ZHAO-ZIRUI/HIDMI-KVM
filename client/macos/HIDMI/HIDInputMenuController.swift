@@ -20,10 +20,11 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
 
     func bind(model: AppModel) {
         self.model = model
-        cancellable = model.objectWillChange.sink { [weak self] _ in
-            self?.markMenuNeedsRebuild()
-            self?.scheduleTopLevelRepair()
-        }
+        cancellable = Publishers.Merge(model.objectWillChange, model.hidmi.objectWillChange)
+            .sink { [weak self] _ in
+                self?.markMenuNeedsRebuild()
+                self?.scheduleTopLevelRepair()
+            }
     }
 
     func installOrUpdate() {

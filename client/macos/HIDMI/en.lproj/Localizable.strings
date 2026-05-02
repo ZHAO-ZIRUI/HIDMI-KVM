@@ -13,8 +13,6 @@
 
 "view.original_input" = "Original Input";
 "view.fit_to_window" = "Fit to Window";
-"view.zoom_in" = "Zoom In";
-"view.zoom_out" = "Zoom Out";
 "view.enter_full_screen" = "Enter Full Screen";
 "view.exit_full_screen" = "Exit Full Screen";
 

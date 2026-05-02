@@ -20,10 +20,11 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
 
     func bind(model: AppModel) {
         self.model = model
-        cancellable = model.objectWillChange.sink { [weak self] _ in
-            self?.markMenuNeedsRebuild()
-            self?.scheduleTopLevelRepair()
-        }
+        cancellable = Publishers.Merge(model.objectWillChange, model.hidmi.objectWillChange)
+            .sink { [weak self] _ in
+                self?.markMenuNeedsRebuild()
+                self?.scheduleTopLevelRepair()
+            }
     }
 
     func installOrUpdate() {
@@ -117,8 +118,6 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(originalInputItem(model: model))
         menu.addItem(fitToWindowItem(model: model))
-        menu.addItem(zoomInItem())
-        menu.addItem(zoomOutItem())
         menu.addItem(fullScreenItem())
         clearImages(in: menu)
     }
@@ -256,28 +255,6 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
         return item
     }
 
-    private func zoomInItem() -> NSMenuItem {
-        let item = NSMenuItem(
-            title: String(localized: "view.zoom_in"),
-            action: #selector(performZoomIn(_:)),
-            keyEquivalent: "+"
-        )
-        item.keyEquivalentModifierMask = [.command]
-        item.target = self
-        return item
-    }
-
-    private func zoomOutItem() -> NSMenuItem {
-        let item = NSMenuItem(
-            title: String(localized: "view.zoom_out"),
-            action: #selector(performZoomOut(_:)),
-            keyEquivalent: "-"
-        )
-        item.keyEquivalentModifierMask = [.command]
-        item.target = self
-        return item
-    }
-
     func fullScreenItem() -> NSMenuItem {
         let isFullScreen = NSApp.keyWindow?.styleMask.contains(.fullScreen) == true
         let item = NSMenuItem(
@@ -315,14 +292,6 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
 
     @objc private func fitToWindow(_ sender: NSMenuItem) {
         model?.fitToWindow()
-    }
-
-    @objc private func performZoomIn(_ sender: NSMenuItem) {
-        model?.zoomIn()
-    }
-
-    @objc private func performZoomOut(_ sender: NSMenuItem) {
-        model?.zoomOut()
     }
 
     private func clearImages(in menu: NSMenu) {

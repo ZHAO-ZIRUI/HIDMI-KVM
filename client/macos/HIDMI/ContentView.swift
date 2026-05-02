@@ -9,21 +9,34 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             GeometryReader { proxy in
-                let frameSize = model.previewFrameSize(in: proxy.size)
-
-                VideoPreviewView(
-                    session: model.session,
-                    videoOutput: model.videoOutput,
-                    frameReportGeneration: model.frameReportGeneration,
-                    inputSize: model.inputSize,
-                    isAbsolutePointerActive: model.hidmi.isConnected && model.hidmi.usesAbsolutePointer,
-                    isRemoteInputEnabled: model.hidmi.isConnected && !model.isRemoteInputSuspendedByMenu,
-                    actualFrameHandler: model.updateActualVideoFrame,
-                    inputHandler: model.handleRemoteInput
+                let topReservedHeight = model.previewTopReservedHeight
+                let videoAvailableSize = CGSize(
+                    width: proxy.size.width,
+                    height: max(proxy.size.height - topReservedHeight, 1)
                 )
-                    .frame(width: frameSize.width, height: frameSize.height)
-                    .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-                    .clipped()
+                let frameSize = model.previewFrameSize(in: videoAvailableSize)
+
+                VStack(spacing: 0) {
+                    Color.black
+                        .frame(height: topReservedHeight)
+
+                    ZStack {
+                        VideoPreviewView(
+                            session: model.session,
+                            videoOutput: model.videoOutput,
+                            frameReportGeneration: model.frameReportGeneration,
+                            inputSize: model.inputSize,
+                            isAbsolutePointerActive: model.hidmi.isConnected && model.hidmi.usesAbsolutePointer,
+                            isRemoteInputEnabled: model.hidmi.isConnected && !model.isRemoteInputSuspendedByMenu,
+                            actualFrameHandler: model.updateActualVideoFrame,
+                            inputHandler: model.handleRemoteInput
+                        )
+                        .frame(width: frameSize.width, height: frameSize.height)
+                        .clipped()
+                    }
+                    .frame(width: videoAvailableSize.width, height: videoAvailableSize.height)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             }
             .ignoresSafeArea()
 
