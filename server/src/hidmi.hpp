@@ -285,6 +285,7 @@ private:
     void broadcast_discover();
     ChannelEndpoint& endpoint_for(PendingSession& session, int channel_id);
     bool all_channels_ready(const PendingSession& session) const;
+    bool session_is_active(const std::shared_ptr<PendingSession>& session);
     void handle_discover(const Message& message, const sockaddr_storage& addr, socklen_t addr_len);
     void handle_accept(const Message& message, const sockaddr_storage& addr, socklen_t addr_len);
     void tcp_channel_worker(std::shared_ptr<PendingSession> session, int channel_id, std::shared_ptr<std::atomic_bool> done);

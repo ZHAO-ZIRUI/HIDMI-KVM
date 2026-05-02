@@ -73,6 +73,16 @@ void create_led(const fs::path& path, const std::string& brightness = "1\n") {
     write_file(path / "brightness", brightness);
 }
 
+int count_open_fds() {
+    fs::path root = fs::exists("/proc/self/fd") ? fs::path("/proc/self/fd") : fs::path("/dev/fd");
+    int count = 0;
+    for (const auto& entry : fs::directory_iterator(root)) {
+        (void)entry;
+        ++count;
+    }
+    return count;
+}
+
 void test_config() {
     auto cfg = hidmi::parse_server_config(config_text());
     expect(cfg.display_name == "Test HIDMI", "service name mapping failed");
@@ -234,6 +244,29 @@ void test_tcp_error_message_normalization() {
     auto protocol = hidmi::internal::normalize_tcp_error_message("frame channel/session mismatch");
     expect(protocol == "frame channel/session mismatch", "protocol errors should not be HID-prefixed");
     expect(!hidmi::internal::is_hid_error_message("unsupported keyboard frame"), "protocol text should not be HID classified");
+    expect(!hidmi::internal::is_hid_error_message("Broken pipe"), "ACK socket failure should not be HID classified");
+    expect(hidmi::internal::normalize_tcp_error_message("socket write returned zero") == "socket write returned zero", "TCP write failure should remain network classified");
+}
+
+void test_tcp_business_frames_require_active_session() {
+    expect(
+        hidmi::internal::tcp_frame_body_requires_active_session(hidpb::CHANNEL_MOUSE, hidpb::TcpFrame::kMouseState),
+        "mouse state should require an active three-channel session");
+    expect(
+        hidmi::internal::tcp_frame_body_requires_active_session(hidpb::CHANNEL_KEYBOARD, hidpb::TcpFrame::kKeyboardState),
+        "keyboard state should require an active three-channel session");
+    expect(
+        hidmi::internal::tcp_frame_body_requires_active_session(hidpb::CHANNEL_KEYBOARD, hidpb::TcpFrame::kKeyboardSpecial),
+        "keyboard special should require an active three-channel session");
+    expect(
+        hidmi::internal::tcp_frame_body_requires_active_session(hidpb::CHANNEL_CONTROL, hidpb::TcpFrame::kReleaseAll),
+        "release-all should not write HID before activation");
+    expect(
+        !hidmi::internal::tcp_frame_body_requires_active_session(hidpb::CHANNEL_CONTROL, hidpb::TcpFrame::kHeartbeat),
+        "heartbeat should be allowed before activation");
+    expect(
+        !hidmi::internal::tcp_frame_body_requires_active_session(hidpb::CHANNEL_CONTROL, hidpb::TcpFrame::kGoodbye),
+        "goodbye should be allowed to clean up before activation");
 }
 
 void test_hid_reports() {
@@ -299,6 +332,33 @@ void test_hid_writer_reopens_absolute_mouse_after_degraded_start() {
         expect(read_file(absolute).substr(0, 5) == std::string("\x02\x2c\x01\x90\x01", 5), "reopened absolute pointer report mismatch");
         writer.close();
     }
+    fs::remove_all(root);
+}
+
+void test_hid_writer_failed_open_does_not_leak_fd() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-fd-leak-test-" + hidmi::random_b64url(8));
+    fs::create_directories(root);
+    fs::path keyboard = root / "kbd";
+    fs::path missing_mouse = root / "missing-mouse";
+    fs::path absolute = root / "abs";
+    write_file(keyboard);
+    write_file(absolute);
+    int before = count_open_fds();
+    for (int i = 0; i < 20; ++i) {
+        hidmi::HidWriter writer(keyboard.string(), missing_mouse.string(), absolute.string());
+        bool failed = false;
+        try {
+            writer.open();
+        } catch (const std::exception&) {
+            failed = true;
+        }
+        expect(failed, "HID open should fail when mandatory relative mouse is missing");
+        expect(!writer.keyboard_available(), "failed HID open should close the keyboard fd");
+        expect(!writer.relative_mouse_available(), "failed HID open should not leave relative mouse open");
+        expect(!writer.absolute_mouse_available(), "failed HID open should not leave absolute mouse open");
+    }
+    int after = count_open_fds();
+    expect(after <= before + 1, "repeated failed HID opens should not leak file descriptors");
     fs::remove_all(root);
 }
 
@@ -599,9 +659,11 @@ int main() {
         test_protobuf_udp_discover_and_offer_helpers();
         test_protobuf_offer_hmac_and_absolute_scaling();
         test_tcp_error_message_normalization();
+        test_tcp_business_frames_require_active_session();
         test_hid_reports();
         test_hid_writer_allows_missing_absolute_mouse();
         test_hid_writer_reopens_absolute_mouse_after_degraded_start();
+        test_hid_writer_failed_open_does_not_leak_fd();
         test_units();
         test_led_network_states();
         test_led_hid_flash_states();

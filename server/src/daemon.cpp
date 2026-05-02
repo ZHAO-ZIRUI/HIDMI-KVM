@@ -226,6 +226,24 @@ std::uint64_t buttons_mask_to_int(std::uint64_t mask) {
 
 }  // namespace
 
+namespace internal {
+
+bool tcp_frame_body_requires_active_session(int channel_id, int body_case) {
+    auto channel = static_cast<pb::ChannelId>(channel_id);
+    switch (channel) {
+    case pb::CHANNEL_CONTROL:
+        return body_case == pb::TcpFrame::kReleaseAll;
+    case pb::CHANNEL_MOUSE:
+        return body_case == pb::TcpFrame::kMouseState;
+    case pb::CHANNEL_KEYBOARD:
+        return body_case == pb::TcpFrame::kKeyboardState || body_case == pb::TcpFrame::kKeyboardSpecial;
+    default:
+        return false;
+    }
+}
+
+}  // namespace internal
+
 Daemon::Daemon(ServerConfig config, std::optional<std::string> token_override)
     : config_(std::move(config)),
       device_id_(machine_id()),
@@ -249,6 +267,11 @@ Daemon::ChannelEndpoint& Daemon::endpoint_for(PendingSession& session, int chann
 
 bool Daemon::all_channels_ready(const PendingSession& session) const {
     return session.control.ready && session.mouse.ready && session.keyboard.ready;
+}
+
+bool Daemon::session_is_active(const std::shared_ptr<PendingSession>& session) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return session && session->active && !session->cleanup_requested && active_session_id_ == session->session_id;
 }
 
 int Daemon::serve_forever() {
@@ -641,6 +664,17 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
         }
         set_runtime_client_request_activity();
 
+        if (internal::tcp_frame_body_requires_active_session(channel_id, static_cast<int>(frame.body_case())) && !session_is_active(session)) {
+            led_network_error("business frame before session active");
+            if (channel == pb::CHANNEL_KEYBOARD || frame.body_case() == pb::TcpFrame::kReleaseAll) {
+                if (frame.ack_required()) {
+                    send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_REJECTED, "session is not active");
+                    set_runtime_client_response_activity();
+                }
+            }
+            continue;
+        }
+
         if (channel == pb::CHANNEL_CONTROL) {
             if (frame.body_case() == pb::TcpFrame::kHeartbeat) {
                 auto response = base_frame(*session, channel, frame.seq());
@@ -655,6 +689,7 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
             }
             if (frame.body_case() == pb::TcpFrame::kReleaseAll) {
                 led_input_received();
+                std::string hid_error;
                 try {
                     std::lock_guard<std::mutex> hid_lock(hid_mutex_);
                     if (hid_) {
@@ -663,16 +698,20 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     }
                     clear_input_pressed_state();
                     led_hid_event_sent(false);
-                    if (frame.ack_required()) {
-                        send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
-                        set_runtime_client_response_activity();
-                    }
                 } catch (const std::exception& exc) {
+                    hid_error = exc.what();
                     mark_hid_failed(std::string("release all failed: ") + exc.what());
-                    if (frame.ack_required()) {
-                        send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_REJECTED, exc.what());
-                        set_runtime_client_response_activity();
-                    }
+                }
+                if (frame.ack_required()) {
+                    send_ack(
+                        conn_fd,
+                        *session,
+                        channel,
+                        frame.seq(),
+                        hid_error.empty() ? pb::ACK_OK : pb::ACK_REJECTED,
+                        hid_error
+                    );
+                    set_runtime_client_response_activity();
                 }
                 continue;
             }
@@ -752,12 +791,12 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     led_hid_event_sent(modifiers != 0 || !keys.empty());
                     led_hid_success(writer);
                     session->last_keyboard_seq = frame.seq();
-                    send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
-                    set_runtime_client_response_activity();
                 } catch (const std::exception& exc) {
                     mark_hid_failed(std::string("keyboard state failed: ") + exc.what());
                     throw;
                 }
+                send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
+                set_runtime_client_response_activity();
                 continue;
             }
             if (frame.body_case() == pb::TcpFrame::kKeyboardSpecial) {
@@ -779,12 +818,12 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     clear_input_pressed_state();
                     led_hid_event_sent(false);
                     led_hid_success(writer);
-                    send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
-                    set_runtime_client_response_activity();
                 } catch (const std::exception& exc) {
                     mark_hid_failed(std::string("keyboard special failed: ") + exc.what());
                     throw;
                 }
+                send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
+                set_runtime_client_response_activity();
                 continue;
             }
             throw ProtocolError("unsupported keyboard frame");

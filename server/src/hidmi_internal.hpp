@@ -90,6 +90,7 @@ std::string offer_auth_payload(
     std::uint64_t client_unix_ms);
 bool valid_offer_tcp_ports(std::uint32_t control, std::uint32_t mouse, std::uint32_t keyboard);
 int protocol_absolute_to_hid(std::uint32_t value);
+bool tcp_frame_body_requires_active_session(int channel_id, int body_case);
 bool is_hid_error_message(const std::string& message);
 std::string normalize_tcp_error_message(const std::string& message);
 std::string active_trigger(const std::string& text);
