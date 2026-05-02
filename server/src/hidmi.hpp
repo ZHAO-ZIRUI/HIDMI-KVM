@@ -138,6 +138,21 @@ private:
     int clamp_relative_value(int value) const;
 };
 
+enum class NetworkLedState {
+    Idle,
+    Active,
+    Other,
+};
+
+enum class HidLedState {
+    Ready,
+    UsbNotConfigured,
+    NodeUnavailable,
+    WriteFailed,
+    GadgetUnavailable,
+    AbsoluteDegraded,
+};
+
 class LedController {
 public:
     using Clock = std::function<double()>;
@@ -153,6 +168,8 @@ public:
 
     void start(bool start_thread = true);
     void stop();
+    void set_network_state(NetworkLedState state);
+    void set_hid_state(HidLedState state, const std::string& reason = {});
     void set_active_client(bool active);
     void latch_protocol_error(const std::string& reason);
     void latch_auth_error(const std::string& reason);
@@ -169,7 +186,6 @@ private:
     std::unique_ptr<SysfsLed> secondary_;
     std::string udc_state_path_;
     double blink_sec_;
-    double pulse_sec_;
     std::chrono::milliseconds tick_;
     Clock clock_;
     std::mutex mutex_;
@@ -177,21 +193,17 @@ private:
     std::thread thread_;
     bool stop_requested_ = false;
     double started_at_ = 0.0;
-    bool active_client_ = false;
-    bool protocol_error_latched_ = false;
-    bool hid_error_latched_ = false;
-    bool secondary_hold_active_ = false;
-    std::string last_protocol_error_;
-    std::string last_auth_error_;
+    NetworkLedState network_state_ = NetworkLedState::Idle;
+    HidLedState hid_state_ = HidLedState::Ready;
+    std::string last_network_error_;
     std::string last_hid_error_;
-    double auth_error_started_at_ = 0.0;
-    double auth_error_until_ = 0.0;
-    double secondary_pulse_until_ = 0.0;
+    double network_other_until_ = 0.0;
 
     void run();
-    bool protocol_blink_on(double now) const;
-    bool auth_error_blink_on(double now, double auth_error_started_at) const;
+    bool short_blink_on(double now) const;
+    bool multi_flash_on(double now, int count) const;
     bool idle_primary_on(double now) const;
+    int hid_flash_count(HidLedState state) const;
     bool usb_configured() const;
 };
 
@@ -294,12 +306,15 @@ private:
     void retry_hid_if_due();
     HidWriter& require_hid();
     void set_led_active_client(bool active);
+    void set_led_network_state(NetworkLedState state);
     void led_protocol_error(const std::string& reason);
     void led_auth_error(const std::string& reason);
+    void led_network_error(const std::string& reason);
     void led_hid_error(const std::string& reason);
+    void led_hid_state(HidLedState state, const std::string& reason = {});
     void led_input_received();
     void led_hid_event_sent(bool hold_active = false);
-    void led_hid_success();
+    void led_hid_success(const HidWriter& writer);
     void publish_runtime_status(bool daemon_running);
     void set_runtime_tcp_connected(bool connected);
     void set_runtime_client_connected(bool connected, bool update_timestamp);

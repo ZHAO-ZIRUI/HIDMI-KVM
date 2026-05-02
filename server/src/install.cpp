@@ -90,7 +90,7 @@ std::string render_hidmi_service(const InstallPaths& paths) {
            "Description=HIDMI KVM TCP/UDP daemon\n"
            "After=network-online.target hidmi-gadget.service\n"
            "Wants=network-online.target hidmi-gadget.service\n"
-           "Requires=hidmi-gadget.service\n\n"
+           "\n"
            "[Service]\n"
            "Type=simple\n"
            "WorkingDirectory=" + paths.install_root.string() + "\n"

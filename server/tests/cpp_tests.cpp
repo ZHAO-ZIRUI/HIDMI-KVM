@@ -307,10 +307,12 @@ void test_units() {
     auto service = hidmi::render_hidmi_service(paths);
     auto gadget = hidmi::render_gadget_service(paths);
     expect(service.find("ExecStart=/usr/local/bin/hidmi daemon --config /etc/hidmi/current/conf/installed.toml") != std::string::npos, "daemon unit path mismatch");
+    expect(service.find("Requires=hidmi-gadget.service") == std::string::npos, "daemon unit should not require gadget setup");
+    expect(service.find("Wants=network-online.target hidmi-gadget.service") != std::string::npos, "daemon unit should still want gadget setup");
     expect(gadget.find("gadget-setup --config") != std::string::npos, "gadget setup unit mismatch");
 }
 
-void test_led_idle_and_active_client() {
+void test_led_network_states() {
     fs::path root = fs::temp_directory_path() / ("hidmi-led-idle-test-" + hidmi::random_b64url(8));
     fs::path udc = root / "state";
     write_file(udc, "configured\n");
@@ -327,64 +329,98 @@ void test_led_idle_and_active_client() {
     expect(led.render_once(1.30).first, "active client should hold P on");
     led.set_active_client(false);
     expect(!led.render_once(1.30).first, "inactive client should return P to idle pattern");
+    led.set_network_state(hidmi::NetworkLedState::Other);
+    expect(led.render_once(1.20).first, "network OTHER should use continuous short blink on phase");
+    expect(!led.render_once(1.33).first, "network OTHER should use continuous short blink off phase");
     fs::remove_all(root);
 }
 
-void test_led_hid_and_protocol_states() {
+void expect_hid_flash_count(hidmi::LedController& led, hidmi::HidLedState state, int count, const std::string& name) {
+    led.set_hid_state(state);
+    if (count == 0) {
+        expect(!led.render_once(0.01).second, name + " should keep S off");
+        expect(!led.render_once(0.25).second, name + " should keep S off later in the cycle");
+        return;
+    }
+    for (int index = 0; index < count; ++index) {
+        double start = index * 0.24;
+        expect(led.render_once(start + 0.01).second, name + " flash " + std::to_string(index + 1) + " should be on");
+        expect(!led.render_once(start + 0.13).second, name + " flash " + std::to_string(index + 1) + " gap should be off");
+    }
+    double active_span = 0.24 * count - 0.12;
+    expect(!led.render_once(active_span + 0.01).second, name + " should enter the long off interval after its flashes");
+    expect(led.render_once(active_span + 2.01).second, name + " should repeat after the long off interval");
+}
+
+void test_led_hid_flash_states() {
     fs::path root = fs::temp_directory_path() / ("hidmi-led-error-test-" + hidmi::random_b64url(8));
     fs::path udc = root / "state";
-    write_file(udc, "not attached\n");
+    write_file(udc, "configured\n");
     double now = 0.0;
     hidmi::LedController led("", "", udc.string(), 2.0, 0.30, std::chrono::milliseconds(50), [&] { return now; });
-    expect(led.render_once(0.20).second, "S should stay on when HID is not configured");
-    write_file(udc, "configured\n");
-    expect(!led.render_once(0.20).second, "S should be off when HID is configured and idle");
+    expect_hid_flash_count(led, hidmi::HidLedState::Ready, 0, "HID_READY");
+    expect_hid_flash_count(led, hidmi::HidLedState::UsbNotConfigured, 1, "USB_NOT_CONFIGURED");
+    expect_hid_flash_count(led, hidmi::HidLedState::NodeUnavailable, 2, "HID_NODE_UNAVAILABLE");
+    expect_hid_flash_count(led, hidmi::HidLedState::WriteFailed, 3, "HID_WRITE_FAILED");
+    expect_hid_flash_count(led, hidmi::HidLedState::GadgetUnavailable, 4, "GADGET_UNAVAILABLE");
+    expect_hid_flash_count(led, hidmi::HidLedState::AbsoluteDegraded, 5, "ABSOLUTE_DEGRADED");
+
+    write_file(udc, "not attached\n");
+    led.set_hid_state(hidmi::HidLedState::NodeUnavailable);
+    expect(led.render_once(0.01).second, "UDC not configured should flash S once");
+    expect(!led.render_once(0.25).second, "UDC not configured should take priority over HID node two-flash state");
+    led.set_hid_state(hidmi::HidLedState::GadgetUnavailable);
+    expect(led.render_once(0.73).second, "gadget unavailable should retain four-flash priority over UDC state");
     led.latch_protocol_error("bad packet");
-    auto on = led.render_once(0.20);
-    expect(on.first && on.second, "protocol error should slow-blink P and S together in on phase");
-    auto off = led.render_once(1.20);
-    expect(!off.first && !off.second, "protocol error should slow-blink P and S together in off phase");
-    now = 1.25;
-    led.notify_hid_event_sent();
-    led.clear_errors();
-    auto recovered = led.render_once(1.25);
-    expect(!recovered.first && recovered.second, "successful HID event should clear protocol error and flash S");
-    now = 2.00;
-    led.latch_auth_error("bad token");
-    expect(led.render_once(2.05).second, "auth failure should fast-blink S in the on phase");
-    expect(!led.render_once(2.15).second, "auth failure should fast-blink S in the off phase");
-    expect(!led.render_once(7.01).second, "auth failure S blink should expire after 5s");
+    auto on = led.render_once(0.25);
+    expect(on.first && on.second, "gadget state should keep S independent while protocol error drives P");
     fs::remove_all(root);
 }
 
-void test_led_successful_event_activity() {
+void test_led_protocol_and_auth_are_network_only() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-led-protocol-test-" + hidmi::random_b64url(8));
+    fs::path udc = root / "state";
+    write_file(udc, "configured\n");
+    double now = 0.0;
+    hidmi::LedController led("", "", udc.string(), 2.0, 0.30, std::chrono::milliseconds(50), [&] { return now; });
+    led.latch_protocol_error("bad packet");
+    auto on = led.render_once(0.05);
+    expect(on.first && !on.second, "protocol error should blink P only in on phase");
+    auto off = led.render_once(1.20);
+    expect(!off.second, "protocol error should not drive S in off phase either");
+    led.set_hid_state(hidmi::HidLedState::Ready);
+    now = 2.00;
+    led.latch_auth_error("bad token");
+    expect(led.render_once(2.17).first, "auth failure should blink P in the on phase");
+    expect(!led.render_once(2.17).second, "auth failure should not drive S");
+    expect(!led.render_once(7.05).first, "transient network error should expire after 5s");
+    fs::remove_all(root);
+}
+
+void test_led_input_events_do_not_drive_s() {
     fs::path root = fs::temp_directory_path() / ("hidmi-led-event-test-" + hidmi::random_b64url(8));
     fs::path udc = root / "state";
     write_file(udc, "configured\n");
     double now = 0.0;
     hidmi::LedController led("", "", udc.string(), 2.0, 0.12, std::chrono::milliseconds(50), [&] { return now; });
     led.notify_hid_event_sent();
-    expect(led.render_once(0.000).second, "S should light immediately after a single successful HID event");
-    expect(led.render_once(0.100).second, "S should remain on for at least 100ms after a single successful HID event");
-    expect(!led.render_once(0.121).second, "S should turn off after the configured single-event pulse");
+    expect(!led.render_once(0.000).second, "S should not light after a single successful HID event");
+    expect(!led.render_once(0.100).second, "S should remain off after a single successful HID event");
 
     now = 0.020;
     led.notify_hid_event_sent();
-    expect(led.render_once(0.130).second, "a HID event while S is lit should reset the pulse timer");
-    expect(!led.render_once(0.141).second, "S should turn off after the latest HID event pulse expires");
+    expect(!led.render_once(0.130).second, "repeated HID events should not pulse S");
 
     now = 0.200;
     led.notify_hid_event_sent();
-    expect(led.render_once(0.300).second, "S should light again after a later HID event");
-    expect(!led.render_once(0.321).second, "S should turn off after the later pulse");
+    expect(!led.render_once(0.300).second, "later HID events should not pulse S");
 
     now = 0.400;
     led.notify_hid_event_sent(true);
-    expect(led.render_once(1.000).second, "S should stay on while a keyboard or button report is held active");
+    expect(!led.render_once(1.000).second, "held keyboard or button report should not hold S on");
     now = 1.000;
     led.notify_hid_event_sent(false);
-    expect(led.render_once(1.100).second, "S should remain on after the held report is released");
-    expect(!led.render_once(1.121).second, "S should turn off after the release pulse expires");
+    expect(!led.render_once(1.100).second, "release event should not pulse S");
     fs::remove_all(root);
 }
 
@@ -567,9 +603,10 @@ int main() {
         test_hid_writer_allows_missing_absolute_mouse();
         test_hid_writer_reopens_absolute_mouse_after_degraded_start();
         test_units();
-        test_led_idle_and_active_client();
-        test_led_hid_and_protocol_states();
-        test_led_successful_event_activity();
+        test_led_network_states();
+        test_led_hid_flash_states();
+        test_led_protocol_and_auth_are_network_only();
+        test_led_input_events_do_not_drive_s();
         test_write_fd_all_fails_on_closed_fd();
         test_led_start_clears_outputs();
         test_led_missing_paths_are_nonfatal();

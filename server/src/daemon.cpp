@@ -426,6 +426,7 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
     }
     if (packet.protocol_version() != kProtoVersion) {
         set_runtime_client_proto_mismatch(true);
+        led_protocol_error("Offer protocol version mismatch");
         send_callback(false, pb::PROTOCOL_VERSION_MISMATCH);
         return;
     }
@@ -435,6 +436,7 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
         return;
     }
     if (!internal::valid_offer_tcp_ports(offer.control_tcp_port(), offer.mouse_tcp_port(), offer.keyboard_tcp_port())) {
+        led_protocol_error("invalid Offer TCP ports");
         send_callback(false, pb::INVALID_PORT);
         return;
     }
@@ -456,6 +458,7 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!active_session_id_.empty() || !pending_.empty()) {
+            led_network_error("server busy");
             send_callback(false, pb::SERVER_BUSY);
             return;
         }
@@ -480,12 +483,14 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
         session->mouse.listener_fd = bind_tcp_listener_exact(session->mouse.port);
         session->keyboard.listener_fd = bind_tcp_listener_exact(session->keyboard.port);
     } catch (const ProtocolError&) {
+        led_protocol_error("invalid Offer TCP port");
         send_callback(false, pb::INVALID_PORT);
         return;
     } catch (const std::exception&) {
         close_fd(session->control.listener_fd);
         close_fd(session->mouse.listener_fd);
         close_fd(session->keyboard.listener_fd);
+        led_network_error("TCP listener occupied");
         send_callback(false, pb::TCP_OCCUPIED);
         return;
     }
@@ -494,6 +499,7 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
         std::lock_guard<std::mutex> lock(mutex_);
         pending_[session->session_id] = session;
     }
+    set_led_network_state(NetworkLedState::Other);
     try {
         std::lock_guard<std::mutex> lock(worker_mutex_);
         for (pb::ChannelId channel : {pb::CHANNEL_CONTROL, pb::CHANNEL_MOUSE, pb::CHANNEL_KEYBOARD}) {
@@ -651,10 +657,12 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                 led_input_received();
                 try {
                     std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-                    if (hid_) hid_->release_all();
+                    if (hid_) {
+                        hid_->release_all();
+                        led_hid_success(*hid_);
+                    }
                     clear_input_pressed_state();
                     led_hid_event_sent(false);
-                    led_hid_success();
                     if (frame.ack_required()) {
                         send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
                         set_runtime_client_response_activity();
@@ -699,7 +707,8 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
             led_input_received();
             try {
                 std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-                require_hid().write_pointer_report(
+                auto& writer = require_hid();
+                writer.write_pointer_report(
                     buttons,
                     x,
                     y,
@@ -712,7 +721,7 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                 record_mouse_pressed_state(buttons);
                 record_absolute_mouse_pressed_state(buttons);
                 led_hid_event_sent(buttons != 0);
-                led_hid_success();
+                led_hid_success(writer);
             } catch (const std::exception& exc) {
                 mark_hid_failed(std::string("mouse state failed: ") + exc.what());
                 if (mouse.has_reliable_edge()) throw;
@@ -737,10 +746,11 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                 led_input_received();
                 try {
                     std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-                    require_hid().write_keyboard_report(modifiers, keys);
+                    auto& writer = require_hid();
+                    writer.write_keyboard_report(modifiers, keys);
                     record_keyboard_pressed_state(modifiers, keys);
                     led_hid_event_sent(modifiers != 0 || !keys.empty());
-                    led_hid_success();
+                    led_hid_success(writer);
                     session->last_keyboard_seq = frame.seq();
                     send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
                     set_runtime_client_response_activity();
@@ -768,7 +778,7 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     writer.write_keyboard_report(0, {});
                     clear_input_pressed_state();
                     led_hid_event_sent(false);
-                    led_hid_success();
+                    led_hid_success(writer);
                     send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
                     set_runtime_client_response_activity();
                 } catch (const std::exception& exc) {
@@ -911,10 +921,18 @@ bool Daemon::ensure_hid_available(bool force) {
     if (config_.discovery_only) return false;
 
     auto now = std::chrono::steady_clock::now();
+    bool existing_absolute_degraded = false;
+    std::string existing_absolute_error;
     {
         std::lock_guard<std::mutex> hid_lock(hid_mutex_);
         if (hid_ && !force) {
+            existing_absolute_degraded = hid_->absolute_mouse_degraded();
+            existing_absolute_error = hid_->last_absolute_error();
             set_runtime_hid_available(true);
+            led_hid_state(
+                existing_absolute_degraded ? HidLedState::AbsoluteDegraded : HidLedState::Ready,
+                existing_absolute_degraded ? existing_absolute_error : ""
+            );
             return true;
         }
         if (!force && now < next_hid_retry_at_) {
@@ -934,18 +952,23 @@ bool Daemon::ensure_hid_available(bool force) {
             next_hid_retry_at_ = std::chrono::steady_clock::now() + kHidRetryInterval;
         }
         set_runtime_hid_available(false);
-        led_hid_error(std::string("HID open failed: ") + exc.what());
+        led_hid_state(HidLedState::NodeUnavailable, std::string("HID open failed: ") + exc.what());
         std::cerr << "WARNING: HID open failed; retrying in 3s: " << exc.what() << "\n";
         return false;
     }
 
+    bool absolute_degraded = candidate->absolute_mouse_degraded();
+    std::string absolute_error = candidate->last_absolute_error();
     {
         std::lock_guard<std::mutex> hid_lock(hid_mutex_);
         hid_ = std::move(candidate);
         next_hid_retry_at_ = {};
     }
     set_runtime_hid_available(true);
-    if (led_) led_->clear_hid_error();
+    led_hid_state(
+        absolute_degraded ? HidLedState::AbsoluteDegraded : HidLedState::Ready,
+        absolute_degraded ? absolute_error : ""
+    );
     std::cerr << "OK: HID devices opened\n";
     return true;
 }
@@ -963,12 +986,24 @@ void Daemon::mark_hid_failed(const std::string& reason) {
 }
 
 void Daemon::retry_hid_if_due() {
+    bool had_hid = false;
+    bool absolute_degraded = false;
+    std::string absolute_error;
     {
         std::lock_guard<std::mutex> hid_lock(hid_mutex_);
         if (hid_) {
             hid_->try_reopen_absolute(false);
-            return;
+            had_hid = true;
+            absolute_degraded = hid_->absolute_mouse_degraded();
+            absolute_error = hid_->last_absolute_error();
         }
+    }
+    if (had_hid) {
+        led_hid_state(
+            absolute_degraded ? HidLedState::AbsoluteDegraded : HidLedState::Ready,
+            absolute_degraded ? absolute_error : ""
+        );
+        return;
     }
     ensure_hid_available(false);
 }
@@ -979,12 +1014,22 @@ HidWriter& Daemon::require_hid() {
 }
 
 void Daemon::set_led_active_client(bool active) { if (led_) led_->set_active_client(active); }
+void Daemon::set_led_network_state(NetworkLedState state) { if (led_) led_->set_network_state(state); }
 void Daemon::led_protocol_error(const std::string& reason) { if (led_) led_->latch_protocol_error(reason); }
 void Daemon::led_auth_error(const std::string& reason) { if (led_) led_->latch_auth_error(reason); }
+void Daemon::led_network_error(const std::string& reason) { if (led_) led_->latch_protocol_error(reason); }
 void Daemon::led_hid_error(const std::string& reason) { if (led_) led_->latch_hid_error(reason); }
+void Daemon::led_hid_state(HidLedState state, const std::string& reason) { if (led_) led_->set_hid_state(state, reason); }
 void Daemon::led_input_received() { if (led_) led_->notify_input_received(); }
 void Daemon::led_hid_event_sent(bool hold_active) { if (led_) led_->notify_hid_event_sent(hold_active); }
-void Daemon::led_hid_success() { if (led_) led_->clear_errors(); }
+void Daemon::led_hid_success(const HidWriter& writer) {
+    if (!led_) return;
+    if (writer.absolute_mouse_degraded()) {
+        led_->set_hid_state(HidLedState::AbsoluteDegraded, writer.last_absolute_error());
+    } else {
+        led_->set_hid_state(HidLedState::Ready);
+    }
+}
 
 void Daemon::publish_runtime_status(bool daemon_running) {
     bool tcp_connected;

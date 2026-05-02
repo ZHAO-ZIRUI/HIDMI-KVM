@@ -7,9 +7,9 @@ using namespace internal;
 
 namespace {
 
-constexpr double kAuthErrorBlinkDurationSec = 5.0;
-constexpr double kAuthErrorBlinkCadenceSec = 0.20;
-constexpr double kAuthErrorBlinkOnSec = 0.10;
+constexpr double kNetworkErrorBlinkDurationSec = 5.0;
+constexpr double kShortFlashOnSec = 0.12;
+constexpr double kShortFlashOffSec = 0.12;
 constexpr auto kAbsoluteMouseRetryInterval = std::chrono::seconds(3);
 
 }  // namespace
@@ -253,9 +253,9 @@ LedController::LedController(std::string primary_path, std::string secondary_pat
       secondary_(std::make_unique<SysfsLed>(std::move(secondary_path), "secondary")),
       udc_state_path_(std::move(udc_state_path)),
       blink_sec_(blink_sec),
-      pulse_sec_(pulse_sec),
       tick_(tick),
       clock_(std::move(clock)) {
+    (void)pulse_sec;
     if (!clock_) {
         auto start = std::chrono::steady_clock::now();
         clock_ = [start]() {
@@ -289,102 +289,103 @@ void LedController::stop() {
 }
 
 void LedController::set_active_client(bool active) {
+    set_network_state(active ? NetworkLedState::Active : NetworkLedState::Idle);
+}
+
+void LedController::set_network_state(NetworkLedState state) {
     std::lock_guard<std::mutex> lock(mutex_);
-    active_client_ = active;
-    if (active) {
-        auth_error_until_ = 0.0;
-        last_auth_error_.clear();
+    network_state_ = state;
+    if (state != NetworkLedState::Other) {
+        network_other_until_ = 0.0;
+        last_network_error_.clear();
     }
+    cv_.notify_all();
+}
+
+void LedController::set_hid_state(HidLedState state, const std::string& reason) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    hid_state_ = state;
+    last_hid_error_ = reason;
     cv_.notify_all();
 }
 
 void LedController::latch_protocol_error(const std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
-    protocol_error_latched_ = true;
-    last_protocol_error_ = reason;
+    network_state_ = NetworkLedState::Other;
+    network_other_until_ = clock_() + kNetworkErrorBlinkDurationSec;
+    last_network_error_ = reason;
     cv_.notify_all();
 }
 
 void LedController::latch_auth_error(const std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
-    double now = clock_();
-    auth_error_started_at_ = now;
-    auth_error_until_ = now + kAuthErrorBlinkDurationSec;
-    last_auth_error_ = reason;
+    network_state_ = NetworkLedState::Other;
+    network_other_until_ = clock_() + kNetworkErrorBlinkDurationSec;
+    last_network_error_ = reason;
     cv_.notify_all();
 }
 
 void LedController::latch_hid_error(const std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
-    hid_error_latched_ = true;
+    hid_state_ = HidLedState::WriteFailed;
     last_hid_error_ = reason;
     cv_.notify_all();
 }
 
 void LedController::clear_hid_error() {
     std::lock_guard<std::mutex> lock(mutex_);
-    hid_error_latched_ = false;
+    hid_state_ = HidLedState::Ready;
     last_hid_error_.clear();
     cv_.notify_all();
 }
 
 void LedController::clear_errors() {
     std::lock_guard<std::mutex> lock(mutex_);
-    protocol_error_latched_ = false;
-    hid_error_latched_ = false;
-    auth_error_until_ = 0.0;
-    last_protocol_error_.clear();
-    last_auth_error_.clear();
+    network_state_ = NetworkLedState::Idle;
+    hid_state_ = HidLedState::Ready;
+    network_other_until_ = 0.0;
+    last_network_error_.clear();
     last_hid_error_.clear();
     cv_.notify_all();
 }
 
 void LedController::notify_input_received() {
-    // Input receipt does not drive LED state; S lights only after a HID event is sent.
+    // Input receipt no longer drives LED state.
 }
 
 void LedController::notify_hid_event_sent(bool hold_active) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    double now = clock_();
-    secondary_hold_active_ = hold_active;
-    secondary_pulse_until_ = now + pulse_sec_;
-    cv_.notify_all();
+    (void)hold_active;
+    // Successful input no longer pulses or holds the S LED.
 }
 
 std::pair<bool, bool> LedController::render_once(std::optional<double> now_value) {
     double now = now_value.value_or(clock_());
-    bool active, protocol_error, hid_error;
-    bool secondary_hold_active;
-    double auth_error_started_at, auth_error_until, secondary_pulse_until;
+    NetworkLedState network_state;
+    HidLedState hid_state;
+    double network_other_until;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        active = active_client_;
-        protocol_error = protocol_error_latched_;
-        hid_error = hid_error_latched_;
-        secondary_hold_active = secondary_hold_active_;
-        auth_error_started_at = auth_error_started_at_;
-        auth_error_until = auth_error_until_;
-        secondary_pulse_until = secondary_pulse_until_;
+        network_state = network_state_;
+        hid_state = hid_state_;
+        network_other_until = network_other_until_;
     }
-    bool primary_on;
-    bool secondary_on;
-    if (protocol_error) {
-        primary_on = protocol_blink_on(now);
-        secondary_on = primary_on;
+    if (network_state == NetworkLedState::Other && network_other_until > 0.0 && now >= network_other_until) {
+        network_state = NetworkLedState::Idle;
+    }
+
+    bool primary_on = false;
+    if (network_state == NetworkLedState::Active) {
+        primary_on = true;
+    } else if (network_state == NetworkLedState::Other) {
+        primary_on = short_blink_on(now);
     } else {
-        primary_on = active ? true : idle_primary_on(now);
-        if (now < auth_error_until) {
-            secondary_on = auth_error_blink_on(now, auth_error_started_at);
-        } else if (hid_error || !usb_configured()) {
-            secondary_on = true;
-        } else if (secondary_hold_active) {
-            secondary_on = true;
-        } else if (now < secondary_pulse_until) {
-            secondary_on = true;
-        } else {
-            secondary_on = false;
-        }
+        primary_on = idle_primary_on(now);
     }
+
+    if (hid_state != HidLedState::GadgetUnavailable && !usb_configured()) {
+        hid_state = HidLedState::UsbNotConfigured;
+    }
+    bool secondary_on = multi_flash_on(now, hid_flash_count(hid_state));
     primary_->set_on(primary_on);
     secondary_->set_on(secondary_on);
     return {primary_on, secondary_on};
@@ -402,29 +403,47 @@ void LedController::run() {
     }
 }
 
-bool LedController::protocol_blink_on(double now) const {
-    if (blink_sec_ <= 0) return true;
-    double elapsed = std::fmod(now - started_at_, blink_sec_);
-    if (elapsed < 0) elapsed += blink_sec_;
-    return elapsed < blink_sec_ / 2.0;
-}
-
-bool LedController::auth_error_blink_on(double now, double auth_error_started_at) const {
-    double elapsed = std::fmod(now - auth_error_started_at, kAuthErrorBlinkCadenceSec);
-    if (elapsed < 0) elapsed += kAuthErrorBlinkCadenceSec;
-    return elapsed < kAuthErrorBlinkOnSec;
+bool LedController::short_blink_on(double now) const {
+    constexpr double cycle = kShortFlashOnSec + kShortFlashOffSec;
+    double elapsed = std::fmod(now - started_at_, cycle);
+    if (elapsed < 0) elapsed += cycle;
+    return elapsed < kShortFlashOnSec;
 }
 
 bool LedController::idle_primary_on(double now) const {
-    constexpr double short_on = 0.12;
-    constexpr double short_off = 0.12;
-    constexpr double interval = 2.0;
-    constexpr double cycle = short_on * 3 + short_off * 2 + interval;
+    return multi_flash_on(now, 3);
+}
+
+bool LedController::multi_flash_on(double now, int count) const {
+    if (count <= 0) return false;
+    double interval = blink_sec_ > 0.0 ? blink_sec_ : 2.0;
+    double active_span = kShortFlashOnSec * count + kShortFlashOffSec * std::max(0, count - 1);
+    double cycle = active_span + interval;
     double elapsed = std::fmod(now - started_at_, cycle);
     if (elapsed < 0) elapsed += cycle;
-    return elapsed < short_on ||
-           (elapsed >= short_on + short_off && elapsed < short_on * 2 + short_off) ||
-           (elapsed >= short_on * 2 + short_off * 2 && elapsed < short_on * 3 + short_off * 2);
+    for (int index = 0; index < count; ++index) {
+        double start = index * (kShortFlashOnSec + kShortFlashOffSec);
+        if (elapsed >= start && elapsed < start + kShortFlashOnSec) return true;
+    }
+    return false;
+}
+
+int LedController::hid_flash_count(HidLedState state) const {
+    switch (state) {
+    case HidLedState::Ready:
+        return 0;
+    case HidLedState::UsbNotConfigured:
+        return 1;
+    case HidLedState::NodeUnavailable:
+        return 2;
+    case HidLedState::WriteFailed:
+        return 3;
+    case HidLedState::GadgetUnavailable:
+        return 4;
+    case HidLedState::AbsoluteDegraded:
+        return 5;
+    }
+    return 0;
 }
 
 bool LedController::usb_configured() const {
