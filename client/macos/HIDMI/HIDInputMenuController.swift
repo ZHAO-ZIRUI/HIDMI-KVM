@@ -221,7 +221,7 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
         )
         action.target = self
         action.representedObject = state.id
-        action.isEnabled = state.marker == .connected || !model.hidmi.status.isConnecting
+        action.isEnabled = state.marker == .connected || (!model.hidmi.status.isConnecting && state.device.isConnectable)
         submenu.addItem(action)
 
         submenu.addItem(.separator())

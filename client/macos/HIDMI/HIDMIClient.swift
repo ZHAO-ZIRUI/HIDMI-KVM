@@ -11,11 +11,38 @@ enum HIDMIDeviceTransport: Equatable, Sendable {
 
 enum HIDMIDeviceAvailability: Equatable, Sendable {
     case ready
+    case busy
     case hidUnavailable
     case unavailable(String)
 
     var isConnectable: Bool {
         self == .ready
+    }
+
+    var connectionFailureKind: HIDMIConnectionFailureKind {
+        switch self {
+        case .ready:
+            return .other
+        case .busy:
+            return .busy
+        case .hidUnavailable:
+            return .hidFailure
+        case .unavailable:
+            return .network
+        }
+    }
+
+    var userFacingConnectionDescription: String {
+        switch self {
+        case .ready:
+            return ""
+        case .busy:
+            return String(localized: "error.server_busy")
+        case .hidUnavailable:
+            return String(localized: "error.hid_unavailable")
+        case .unavailable(let message):
+            return message
+        }
     }
 }
 
@@ -415,8 +442,7 @@ enum HIDMIClient {
             do {
                 let packet = try Hidmi_Kvm_Input_V1_UdpPacket(serializedBytes: data)
                 guard packet.protocolVersion == proto,
-                      case .discover(let discover)? = packet.body,
-                      !discover.isBusy else {
+                      case .discover(let discover)? = packet.body else {
                     continue
                 }
                 let host = try ipv4Host(from: peer)
@@ -439,7 +465,18 @@ enum HIDMIClient {
         establishedIOTimeout: TimeInterval
     ) throws -> HIDMISession {
         guard device.availability.isConnectable else {
-            throw HIDMIClientError.server(code: "HID_UNAVAILABLE", detail: String(localized: "error.hid_unavailable"))
+            let code: String
+            switch device.availability {
+            case .busy:
+                code = "SERVER_BUSY"
+            case .hidUnavailable:
+                code = "HID_UNAVAILABLE"
+            case .unavailable:
+                code = "UNAVAILABLE"
+            case .ready:
+                code = "OFFER_REJECTED"
+            }
+            throw HIDMIClientError.server(code: code, detail: device.availability.userFacingConnectionDescription)
         }
 
         var lastReject: HIDMIClientError?
@@ -580,7 +617,7 @@ enum HIDMIClient {
         return hash == 0 ? 1 : hash
     }
 
-    private static func device(
+    static func device(
         fromDiscover discover: Hidmi_Kvm_Input_V1_Discover,
         host: String,
         udpPort: Int,
@@ -590,6 +627,24 @@ enum HIDMIClient {
         let maxPort = try HIDMIProtocolLimits.validatedPort(Int(discover.tcpAcceptMax), field: "tcp_accept_max")
         guard minPort <= maxPort else {
             throw HIDMIClientError.message(String(localized: "error.invalid_port"))
+        }
+        let advertisedCapabilities = Set(discover.capabilities)
+        let isLegacyDiscover = discover.hidStatus == .unknown
+            && !discover.hidAvailable
+            && !discover.absolutePointerAvailable
+            && !discover.relativePointerAvailable
+            && advertisedCapabilities.isEmpty
+        let hidAvailable = isLegacyDiscover ? true : discover.hidAvailable
+        let capabilities = isLegacyDiscover
+            ? Set(["keyboard", "mouse", "release_all", "absolute_pointer"])
+            : advertisedCapabilities
+        let availability: HIDMIDeviceAvailability
+        if discover.isBusy {
+            availability = .busy
+        } else if hidAvailable || discover.hidStatus == .ready || discover.hidStatus == .absoluteDegraded {
+            availability = .ready
+        } else {
+            availability = .hidUnavailable
         }
 
         return HIDMIDevice(
@@ -603,8 +658,8 @@ enum HIDMIClient {
             clientID: String(client.id),
             clientNonce: client.nonce.map { String(format: "%02x", $0) }.joined(),
             requiresAuth: false,
-            capabilities: ["keyboard", "mouse", "release_all", "absolute_pointer"],
-            availability: .ready,
+            capabilities: capabilities,
+            availability: availability,
             serverID: discover.serverID,
             bootID: discover.bootID,
             challengeNonce: discover.challengeNonce,
@@ -650,13 +705,20 @@ enum HIDMIClient {
 
         let fd = try udpSocket(timeout: timeout, bindPort: nil, reusable: false)
         defer { Darwin.close(fd) }
-        try sendUDP(payload: payload, host: device.host, port: device.udpPort, fd: fd)
 
         let deadline = Date().addingTimeInterval(max(timeout, HIDMIProtocolLimits.minimumTimeout))
+        let retryInterval: TimeInterval = 0.2
+        var nextSend = Date.distantPast
         while Date() < deadline {
+            let now = Date()
+            if now >= nextSend {
+                try sendUDP(payload: payload, host: device.host, port: device.udpPort, fd: fd)
+                nextSend = now.addingTimeInterval(retryInterval)
+            }
             let remaining = deadline.timeIntervalSinceNow
             if remaining <= 0 { break }
-            try setTimeout(remaining, fd: fd)
+            let receiveTimeout = min(remaining, max(0.01, nextSend.timeIntervalSinceNow))
+            try setTimeout(receiveTimeout, fd: fd)
 
             var buffer = [UInt8](repeating: 0, count: 1200)
             let bufferCapacity = buffer.count
@@ -674,7 +736,7 @@ enum HIDMIClient {
                     continue
                 }
                 if errno == EAGAIN || errno == EWOULDBLOCK {
-                    break
+                    continue
                 }
                 throw HIDMIClientError.posix("recvfrom", errno)
             }
@@ -904,7 +966,7 @@ enum HIDMIClient {
     }
 }
 
-private struct ClientIdentity {
+struct ClientIdentity {
     let id: UInt64
     let nonce: Data
 }

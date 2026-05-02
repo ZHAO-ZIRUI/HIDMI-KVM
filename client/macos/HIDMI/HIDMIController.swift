@@ -427,9 +427,10 @@ final class HIDMIController: ObservableObject {
         guard let device = discoveredDevices.first(where: { $0.id == id }) else { return }
         guard device.isConnectable else {
             selectedDeviceID = id
-            let message = String(localized: "error.hid_unavailable")
+            let message = device.availability.userFacingConnectionDescription
+            let kind = device.availability.connectionFailureKind
             setFailure(message, clearSelection: false)
-            if shouldPresentWarning(deviceID: device.id, kind: .hidFailure, operation: .connect) {
+            if kind != .busy && shouldPresentWarning(deviceID: device.id, kind: kind, operation: .connect) {
                 warningPresenter.showConnectionFailure(device: device, message: message)
             }
             return
@@ -713,6 +714,7 @@ final class HIDMIController: ObservableObject {
                 && left.summary == right.summary
                 && left.supportsAbsolutePointer == right.supportsAbsolutePointer
                 && left.requiresAuth == right.requiresAuth
+                && left.availability == right.availability
         }
     }
 

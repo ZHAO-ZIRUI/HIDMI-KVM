@@ -70,6 +70,26 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertTrue(controller.discoveredDevices.isEmpty)
     }
 
+    func testDiscoveryPublishesAvailabilityChanges() {
+        let controller = HIDMIController(
+            worker: FakeHIDMIWorker(),
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt(),
+            offlineInterval: 45
+        )
+        let ready = makeDevice(id: "device-a", host: "192.168.1.10")
+        let busy = makeDevice(id: "device-a", host: "192.168.1.10", availability: .busy)
+        let start = Date(timeIntervalSince1970: 100)
+
+        controller.mergeDiscoveredDevices([ready], seenAt: start)
+        XCTAssertEqual(controller.discoveredDevices.first?.availability, .ready)
+
+        controller.mergeDiscoveredDevices([busy], seenAt: start.addingTimeInterval(1))
+
+        XCTAssertEqual(controller.discoveredDevices.first?.availability, .busy)
+        XCTAssertFalse(controller.discoveredDevices.first?.isConnectable ?? true)
+    }
+
     func testStartDiscoveryPerformsStartupAndBackgroundRefreshes() async {
         let worker = FakeHIDMIWorker()
         let controller = HIDMIController(
@@ -1748,6 +1768,36 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertTrue(warnings.failureWarnings.first?.message.contains(String(localized: "error.hid_unavailable")) == true)
     }
 
+    func testBusyDeviceDoesNotAttemptConnectionOrWarn() async {
+        let device = makeDevice(
+            id: "device-a",
+            host: "192.168.1.10",
+            requiresAuth: false,
+            availability: .busy
+        )
+        let worker = FakeHIDMIWorker()
+        let warnings = FakeConnectionWarningPresenter()
+        let controller = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt(),
+            warningPresenter: warnings
+        )
+
+        controller.mergeDiscoveredDevices([device], seenAt: Date())
+        controller.connect(to: device.discoveryID)
+
+        XCTAssertFalse(controller.isConnected)
+        let attempts = await worker.connectAttempts()
+        XCTAssertEqual(attempts, [])
+        XCTAssertTrue(warnings.failureWarnings.isEmpty)
+        if case .failed(let message) = controller.status {
+            XCTAssertEqual(message, String(localized: "error.server_busy"))
+        } else {
+            XCTFail("Expected busy device connection to fail locally")
+        }
+    }
+
     func testConnectionWarningIsThrottledPerDeviceErrorAndOperation() async {
         var currentDate = Date(timeIntervalSince1970: 1_000)
         let device = makeDevice(id: "device-a", host: "192.168.1.10", requiresAuth: false)
@@ -2005,6 +2055,59 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertThrowsError(try HIDMIClient.connect(device: device, token: "", timeout: 0.01, establishedIOTimeout: 0.01)) { error in
             XCTAssertEqual((error as? HIDMIClientError)?.connectionFailureKind, .hidFailure)
         }
+    }
+
+    func testDiscoverParsesBusyAndHIDMetadata() throws {
+        let discover = Hidmi_Kvm_Input_V1_Discover.with {
+            $0.serverID = 123
+            $0.bootID = 456
+            $0.serverName = "Rack KVM"
+            $0.tcpAcceptMin = 10_000
+            $0.tcpAcceptMax = 60_999
+            $0.challengeNonce = Data(repeating: 7, count: 16)
+            $0.isBusy = true
+            $0.hidStatus = .ready
+            $0.hidAvailable = true
+            $0.absolutePointerAvailable = false
+            $0.relativePointerAvailable = true
+            $0.capabilities = ["keyboard", "mouse", "release_all", "relative_pointer"]
+        }
+
+        let device = try HIDMIClient.device(
+            fromDiscover: discover,
+            host: "192.168.1.10",
+            udpPort: HIDMIClient.defaultUDPPort,
+            client: ClientIdentity(id: 42, nonce: Data(repeating: 1, count: 16))
+        )
+
+        XCTAssertEqual(device.availability, .busy)
+        XCTAssertFalse(device.availability.isConnectable)
+        XCTAssertFalse(device.supportsAbsolutePointer)
+        XCTAssertEqual(device.capabilities, Set(["keyboard", "mouse", "release_all", "relative_pointer"]))
+    }
+
+    func testDiscoverParsesHIDUnavailableMetadata() throws {
+        let discover = Hidmi_Kvm_Input_V1_Discover.with {
+            $0.serverID = 123
+            $0.bootID = 456
+            $0.serverName = "Rack KVM"
+            $0.tcpAcceptMin = 10_000
+            $0.tcpAcceptMax = 60_999
+            $0.challengeNonce = Data(repeating: 7, count: 16)
+            $0.hidStatus = .deviceUnavailable
+            $0.hidAvailable = false
+        }
+
+        let device = try HIDMIClient.device(
+            fromDiscover: discover,
+            host: "192.168.1.10",
+            udpPort: HIDMIClient.defaultUDPPort,
+            client: ClientIdentity(id: 42, nonce: Data(repeating: 1, count: 16))
+        )
+
+        XCTAssertEqual(device.availability, .hidUnavailable)
+        XCTAssertFalse(device.availability.isConnectable)
+        XCTAssertTrue(device.capabilities.isEmpty)
     }
 
     func testInvalidSessionPortThrowsRecoverableError() {

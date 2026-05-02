@@ -19,6 +19,7 @@ struct Daemon::PendingSession {
     std::string challenge_nonce;
     std::uint64_t client_id_value = 0;
     std::string client_nonce_bytes;
+    std::string offer_auth_mac;
     ChannelEndpoint control;
     ChannelEndpoint mouse;
     ChannelEndpoint keyboard;
@@ -314,14 +315,14 @@ int Daemon::serve_forever() {
                 publish_runtime_status(true);
                 next_runtime_publish = now + std::chrono::seconds(5);
             }
-            bool idle = false;
+            bool busy = false;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                idle = active_session_id_.empty() && pending_.empty();
+                busy = !active_session_id_.empty() || !pending_.empty();
             }
-            if (idle && now >= next_discover) {
+            if (now >= next_discover) {
                 broadcast_discover();
-                next_discover = now + std::chrono::seconds(1);
+                next_discover = now + (busy ? std::chrono::seconds(2) : std::chrono::seconds(1));
             }
 
             std::array<char, 65535> buffer{};
@@ -403,6 +404,41 @@ void Daemon::handle_udp_datagram(const std::string& data, const sockaddr_storage
 }
 
 void Daemon::broadcast_discover() {
+    bool busy = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        busy = !active_session_id_.empty() || !pending_.empty();
+    }
+
+    bool relative_available = false;
+    bool absolute_available = false;
+    bool hid_available = false;
+    pb::HidStatus hid_status = pb::HID_STATUS_DEVICE_UNAVAILABLE;
+    if (config_.discovery_only) {
+        hid_status = pb::HID_STATUS_DEVICE_UNAVAILABLE;
+    } else if (!usb_configured_for_hid()) {
+        hid_status = pb::HID_STATUS_USB_NOT_CONFIGURED;
+    } else {
+        std::string last_hid_error;
+        {
+            std::lock_guard<std::mutex> lock(runtime_mutex_);
+            last_hid_error = last_hid_error_;
+        }
+        {
+            std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+            if (hid_) {
+                relative_available = hid_->relative_mouse_available();
+                absolute_available = hid_->absolute_mouse_available();
+                hid_available = hid_->mandatory_available();
+                if (hid_available) {
+                    hid_status = absolute_available ? pb::HID_STATUS_READY : pb::HID_STATUS_ABSOLUTE_DEGRADED;
+                }
+            } else if (!last_hid_error.empty()) {
+                hid_status = pb::HID_STATUS_WRITE_FAILED;
+            }
+        }
+    }
+
     pb::UdpPacket packet;
     packet.set_protocol_version(kProtoVersion);
     auto* discover = packet.mutable_discover();
@@ -413,7 +449,20 @@ void Daemon::broadcast_discover() {
     discover->set_tcp_accept_min(kMinTcpPort);
     discover->set_tcp_accept_max(kMaxTcpPort);
     discover->set_challenge_nonce(challenge_nonce_);
-    discover->set_is_busy(false);
+    discover->set_is_busy(busy);
+    discover->set_hid_status(hid_status);
+    discover->set_hid_available(hid_available);
+    discover->set_absolute_pointer_available(absolute_available);
+    discover->set_relative_pointer_available(relative_available);
+    if (hid_available) {
+        discover->add_capabilities("keyboard");
+        discover->add_capabilities("mouse");
+        discover->add_capabilities("release_all");
+        discover->add_capabilities("relative_pointer");
+        if (absolute_available) {
+            discover->add_capabilities("absolute_pointer");
+        }
+    }
 
     std::string payload;
     if (!packet.SerializeToString(&payload)) return;
@@ -422,6 +471,30 @@ void Daemon::broadcast_discover() {
     dest.sin_port = htons(static_cast<std::uint16_t>(config_.udp_port));
     dest.sin_addr.s_addr = htonl(INADDR_BROADCAST);
     ::sendto(udp_fd_, payload.data(), payload.size(), 0, reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+}
+
+bool Daemon::usb_configured_for_hid() const {
+    try {
+        return trim(read_file(config_.hid.udc_state_path)) == "configured";
+    } catch (...) {
+        return false;
+    }
+}
+
+bool Daemon::hid_ready_for_offer() {
+    if (config_.discovery_only) {
+        led_hid_state(HidLedState::NodeUnavailable, "discovery-only mode");
+        set_runtime_hid_available(false);
+        return false;
+    }
+    if (!usb_configured_for_hid()) {
+        led_hid_state(HidLedState::UsbNotConfigured, "USB is not configured");
+        set_runtime_hid_available(false);
+        return false;
+    }
+    if (!ensure_hid_available(false)) return false;
+    std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+    return hid_ && hid_->mandatory_available();
 }
 
 void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len) {
@@ -463,6 +536,39 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
         send_callback(false, pb::INVALID_PORT);
         return;
     }
+    auto same_offer_fingerprint = [&](const PendingSession& session) {
+        return !session.active
+            && !session.cleanup_requested
+            && session.client_id_value == offer.client_id()
+            && session.client_nonce_bytes == offer.client_nonce()
+            && session.control.port == static_cast<int>(offer.control_tcp_port())
+            && session.mouse.port == static_cast<int>(offer.mouse_tcp_port())
+            && session.keyboard.port == static_cast<int>(offer.keyboard_tcp_port())
+            && session.offer_auth_mac == offer.auth_mac();
+    };
+    {
+        std::uint64_t duplicate_session_id = 0;
+        bool busy = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [_, session] : pending_) {
+                if (same_offer_fingerprint(*session)) {
+                    duplicate_session_id = session->session_id_value;
+                    break;
+                }
+            }
+            busy = !active_session_id_.empty() || !pending_.empty();
+        }
+        if (duplicate_session_id != 0) {
+            send_callback(true, pb::OFFER_REJECT_NONE, duplicate_session_id);
+            return;
+        }
+        if (busy) {
+            led_network_error("server busy");
+            send_callback(false, pb::SERVER_BUSY);
+            return;
+        }
+    }
     auto auth_payload = internal::offer_auth_payload(
         offer.server_id(),
         offer.boot_id(),
@@ -478,13 +584,9 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
         send_callback(false, pb::TOKEN_AUTH_FAILED);
         return;
     }
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!active_session_id_.empty() || !pending_.empty()) {
-            led_network_error("server busy");
-            send_callback(false, pb::SERVER_BUSY);
-            return;
-        }
+    if (!hid_ready_for_offer()) {
+        send_callback(false, pb::HID_UNAVAILABLE);
+        return;
     }
 
     auto session = std::make_shared<PendingSession>();
@@ -495,6 +597,7 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
     session->challenge_nonce = challenge_nonce_;
     session->client_id_value = offer.client_id();
     session->client_nonce_bytes = offer.client_nonce();
+    session->offer_auth_mac = offer.auth_mac();
     session->control.port = static_cast<int>(offer.control_tcp_port());
     session->mouse.port = static_cast<int>(offer.mouse_tcp_port());
     session->keyboard.port = static_cast<int>(offer.keyboard_tcp_port());
