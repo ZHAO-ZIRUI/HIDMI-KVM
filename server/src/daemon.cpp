@@ -413,7 +413,10 @@ int Daemon::serve_forever() {
             cleanup_expired_sessions();
             reap_accept_workers();
             enforce_input_watchdog();
-            retry_hid_if_due();
+            update_usb_reenumeration_grace();
+            if (!usb_grace_blocks_hid_retry()) {
+                retry_hid_if_due();
+            }
 
             auto now = std::chrono::steady_clock::now();
             if (now >= next_runtime_publish) {
@@ -913,17 +916,22 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
             if (frame.body_case() == pb::TcpFrame::kReleaseAll) {
                 led_input_received();
                 std::string hid_error;
-                try {
-                    std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-                    if (hid_) {
-                        hid_->release_all();
-                        led_hid_success(*hid_);
-                    }
-                    clear_input_pressed_state();
+                if (drop_input_for_usb_grace(session)) {
                     led_hid_event_sent(false);
-                } catch (const std::exception& exc) {
-                    hid_error = exc.what();
-                    mark_hid_failed(std::string("release all failed: ") + exc.what());
+                } else {
+                    try {
+                        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+                        if (hid_) {
+                            hid_->release_all();
+                            led_hid_success(*hid_);
+                        }
+                        clear_input_pressed_state();
+                        led_hid_event_sent(false);
+                    } catch (const std::exception& exc) {
+                        if (!handle_hid_write_failure(session, "release all failed", exc, false)) {
+                            hid_error = exc.what();
+                        }
+                    }
                 }
                 if (frame.ack_required()) {
                     send_ack(
@@ -939,12 +947,14 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                 continue;
             }
             if (frame.body_case() == pb::TcpFrame::kGoodbye) {
-                try {
-                    std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-                    if (hid_) hid_->release_all();
-                    clear_input_pressed_state();
-                } catch (const std::exception& exc) {
-                    mark_hid_failed(std::string("goodbye release failed: ") + exc.what());
+                if (!drop_input_for_usb_grace(session)) {
+                    try {
+                        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+                        if (hid_) hid_->release_all();
+                        clear_input_pressed_state();
+                    } catch (const std::exception& exc) {
+                        handle_hid_write_failure(session, "goodbye release failed", exc, false);
+                    }
                 }
                 auto response = base_frame(*session, channel, frame.seq());
                 response.mutable_goodbye_ack()->set_reason(frame.goodbye().reason());
@@ -967,6 +977,9 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
             int dy = std::max(-127, std::min(127, static_cast<int>(mouse.rel_dy())));
             int wheel = std::max(-127, std::min(127, static_cast<int>(mouse.wheel_delta_y())));
             led_input_received();
+            if (drop_input_for_usb_grace(session)) {
+                continue;
+            }
             try {
                 std::lock_guard<std::mutex> hid_lock(hid_mutex_);
                 auto& writer = require_hid();
@@ -985,8 +998,8 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                 led_hid_event_sent(buttons != 0);
                 led_hid_success(writer);
             } catch (const std::exception& exc) {
-                mark_hid_failed(std::string("mouse state failed: ") + exc.what());
-                if (mouse.has_reliable_edge()) throw;
+                bool usb_grace = handle_hid_write_failure(session, "mouse state failed", exc, true);
+                if (!usb_grace && mouse.has_reliable_edge()) throw;
             }
             continue;
         }
@@ -1006,6 +1019,12 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                 }
                 int modifiers = static_cast<int>(std::min<std::uint32_t>(state.modifier_mask(), 0xff));
                 led_input_received();
+                if (drop_input_for_usb_grace(session)) {
+                    session->last_keyboard_seq = frame.seq();
+                    send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
+                    set_runtime_client_response_activity();
+                    continue;
+                }
                 try {
                     std::lock_guard<std::mutex> hid_lock(hid_mutex_);
                     auto& writer = require_hid();
@@ -1015,7 +1034,12 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     led_hid_success(writer);
                     session->last_keyboard_seq = frame.seq();
                 } catch (const std::exception& exc) {
-                    mark_hid_failed(std::string("keyboard state failed: ") + exc.what());
+                    if (handle_hid_write_failure(session, "keyboard state failed", exc, true)) {
+                        session->last_keyboard_seq = frame.seq();
+                        send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
+                        set_runtime_client_response_activity();
+                        continue;
+                    }
                     throw;
                 }
                 send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
@@ -1029,6 +1053,11 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     continue;
                 }
                 led_input_received();
+                if (drop_input_for_usb_grace(session)) {
+                    send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
+                    set_runtime_client_response_activity();
+                    continue;
+                }
                 try {
                     std::lock_guard<std::mutex> hid_lock(hid_mutex_);
                     auto& writer = require_hid();
@@ -1042,7 +1071,11 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     led_hid_event_sent(false);
                     led_hid_success(writer);
                 } catch (const std::exception& exc) {
-                    mark_hid_failed(std::string("keyboard special failed: ") + exc.what());
+                    if (handle_hid_write_failure(session, "keyboard special failed", exc, true)) {
+                        send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
+                        set_runtime_client_response_activity();
+                        continue;
+                    }
                     throw;
                 }
                 send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
@@ -1063,6 +1096,7 @@ void Daemon::cleanup_session(std::shared_ptr<PendingSession> session, const std:
         session->disconnect_reason = reason;
         should_release = release && session->active;
         if (active_session_id_ == session->session_id) active_session_id_.clear();
+        if (usb_grace_.session_id() == session->session_id) usb_grace_.clear();
         pending_.erase(session->session_id);
     }
     if (should_release) {
@@ -1177,6 +1211,161 @@ void Daemon::enforce_input_watchdog() {
     set_runtime_disconnect_reason("input watchdog release");
     set_runtime_client_connected(false, false);
     set_led_active_client(false);
+}
+
+void Daemon::update_usb_reenumeration_grace() {
+    auto now = std::chrono::steady_clock::now();
+    std::shared_ptr<PendingSession> session;
+    bool grace_active = false;
+    bool grace_expired = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_session_id_.empty()) {
+            usb_grace_.clear();
+            return;
+        }
+        auto it = pending_.find(active_session_id_);
+        if (it == pending_.end() || it->second->cleanup_requested) {
+            usb_grace_.clear();
+            return;
+        }
+        session = it->second;
+        grace_active = usb_grace_.active_for(active_session_id_, now);
+        grace_expired = usb_grace_.session_id() == active_session_id_ && usb_grace_.expired(now);
+    }
+
+    if (!usb_configured_for_hid()) {
+        if (grace_expired) {
+            cleanup_session(session, "usb not configured grace expired", false);
+            return;
+        }
+        if (!grace_active) {
+            begin_usb_reenumeration_grace(session, "USB is not configured; waiting for re-enumeration", false);
+            return;
+        }
+        set_runtime_hid_available(false);
+        led_hid_state(HidLedState::UsbNotConfigured, "USB is not configured; waiting for re-enumeration");
+        return;
+    }
+
+    if (!grace_active && !grace_expired) return;
+
+    if (!ensure_hid_available(true)) {
+        if (grace_expired) {
+            cleanup_session(session, "usb not configured grace expired", false);
+        }
+        return;
+    }
+
+    bool release_needed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (usb_grace_.session_id() == session->session_id) {
+            release_needed = usb_grace_.release_needed();
+        }
+    }
+
+    if (release_needed) {
+        try {
+            std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+            if (hid_) hid_->release_all();
+        } catch (const std::exception& exc) {
+            std::cerr << "WARNING: USB re-enumeration release_all best-effort failed for session "
+                      << session->session_id << ": " << exc.what() << "\n";
+        } catch (...) {
+            std::cerr << "WARNING: USB re-enumeration release_all best-effort failed for session "
+                      << session->session_id << "\n";
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (usb_grace_.session_id() == session->session_id) usb_grace_.clear();
+        pressed_input_.clear();
+        last_input_activity_ = std::chrono::steady_clock::now();
+    }
+    set_runtime_hid_available(true);
+    {
+        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+        if (hid_) {
+            led_hid_success(*hid_);
+        } else {
+            led_hid_state(HidLedState::Ready);
+        }
+    }
+    std::cerr << "OK: USB re-enumeration grace recovered for session " << session->session_id << "\n";
+}
+
+bool Daemon::usb_grace_blocks_hid_retry() {
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !active_session_id_.empty() && usb_grace_.active_for(active_session_id_, now);
+}
+
+bool Daemon::begin_usb_reenumeration_grace(std::shared_ptr<PendingSession> session, const std::string& reason, bool dropped_input) {
+    if (!session || usb_configured_for_hid()) return false;
+
+    auto now = std::chrono::steady_clock::now();
+    bool started = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!session->active || session->cleanup_requested || active_session_id_ != session->session_id) {
+            return false;
+        }
+        started = usb_grace_.begin(session->session_id, now);
+        usb_grace_.note_release_needed();
+        if (dropped_input) usb_grace_.note_dropped_input();
+        pressed_input_.clear();
+        last_input_activity_ = now;
+    }
+
+    {
+        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+        if (hid_) {
+            hid_->close_without_release();
+            hid_.reset();
+        }
+        next_hid_retry_at_ = {};
+    }
+    set_runtime_hid_available(false);
+    led_hid_state(HidLedState::UsbNotConfigured, reason);
+    if (started) {
+        std::cerr << "WARNING: USB re-enumeration grace started for session "
+                  << session->session_id << ": " << reason << "\n";
+    }
+    return true;
+}
+
+bool Daemon::drop_input_for_usb_grace(std::shared_ptr<PendingSession> session) {
+    auto now = std::chrono::steady_clock::now();
+    bool should_drop = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (session && session->active && !session->cleanup_requested && usb_grace_.active_for(session->session_id, now)) {
+            usb_grace_.note_dropped_input();
+            pressed_input_.clear();
+            last_input_activity_ = now;
+            should_drop = true;
+        }
+    }
+    if (should_drop) {
+        set_runtime_hid_available(false);
+        led_hid_state(HidLedState::UsbNotConfigured, "USB is not configured; dropping input during grace");
+    }
+    return should_drop;
+}
+
+bool Daemon::handle_hid_write_failure(
+    std::shared_ptr<PendingSession> session,
+    const std::string& context,
+    const std::exception& exc,
+    bool dropped_input) {
+    std::string reason = context + ": " + exc.what();
+    if (begin_usb_reenumeration_grace(session, reason, dropped_input)) {
+        return true;
+    }
+    mark_hid_failed(reason);
+    return false;
 }
 
 bool Daemon::ensure_hid_available(bool force) {

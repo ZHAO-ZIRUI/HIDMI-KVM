@@ -300,6 +300,33 @@ void test_auth_failure_limiter() {
     expect(log_limiter.record_failure("10.0.0.12", now + std::chrono::seconds(11)).should_log, "auth failure log should reopen after interval");
 }
 
+void test_usb_reenumeration_grace_tracker() {
+    using Clock = std::chrono::steady_clock;
+    hidmi::UsbReenumerationGrace grace(std::chrono::seconds(10));
+    auto now = Clock::time_point{} + std::chrono::seconds(100);
+
+    expect(grace.begin("session-a", now), "USB grace should start for a session");
+    expect(grace.active_for("session-a", now + std::chrono::seconds(9)), "USB grace should remain active before its deadline");
+    expect(!grace.active_for("session-b", now + std::chrono::seconds(9)), "USB grace should be scoped to the active session");
+    expect(!grace.begin("session-a", now + std::chrono::seconds(5)), "USB grace should not extend while already active");
+    expect(grace.deadline() == now + std::chrono::seconds(10), "USB grace deadline should remain fixed");
+
+    grace.note_dropped_input();
+    expect(grace.dropped_input(), "USB grace should remember that input was dropped");
+    expect(grace.release_needed(), "dropped input should require release after recovery");
+    expect(!grace.active_for("session-a", now + std::chrono::seconds(10)), "USB grace should stop at the 10 second deadline");
+    expect(grace.expired(now + std::chrono::seconds(10)), "USB grace should expire at the deadline");
+
+    expect(grace.begin("session-a", now + std::chrono::seconds(11)), "expired USB grace should allow a new window");
+    expect(!grace.dropped_input(), "new USB grace should clear dropped input state");
+    expect(!grace.release_needed(), "new USB grace should clear release state");
+    grace.note_release_needed();
+    expect(grace.release_needed(), "USB grace should record release without dropped input");
+    grace.clear();
+    expect(!grace.active_for("session-a", now + std::chrono::seconds(12)), "cleared USB grace should be inactive");
+    expect(!grace.expired(now + std::chrono::seconds(12)), "cleared USB grace should not read as expired");
+}
+
 void test_hid_reports() {
     fs::path root = fs::temp_directory_path() / ("hidmi-test-" + hidmi::random_b64url(8));
     fs::create_directories(root);
@@ -693,6 +720,7 @@ int main() {
         test_tcp_business_frames_require_active_session();
         test_interface_type_from_name();
         test_auth_failure_limiter();
+        test_usb_reenumeration_grace_tracker();
         test_hid_reports();
         test_hid_writer_allows_missing_absolute_mouse();
         test_hid_writer_reopens_absolute_mouse_after_degraded_start();

@@ -243,6 +243,32 @@ private:
     bool should_log(SourceState& state, std::chrono::steady_clock::time_point now);
 };
 
+class UsbReenumerationGrace {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    explicit UsbReenumerationGrace(std::chrono::seconds duration = std::chrono::seconds(10));
+
+    bool begin(const std::string& session_id, Clock::time_point now);
+    bool active_for(const std::string& session_id, Clock::time_point now) const;
+    bool expired(Clock::time_point now) const;
+    void note_dropped_input();
+    void note_release_needed();
+    void clear();
+
+    const std::string& session_id() const { return session_id_; }
+    Clock::time_point deadline() const { return deadline_; }
+    bool dropped_input() const { return dropped_input_; }
+    bool release_needed() const { return release_needed_; }
+
+private:
+    std::chrono::seconds duration_;
+    std::string session_id_;
+    Clock::time_point deadline_{};
+    bool dropped_input_ = false;
+    bool release_needed_ = false;
+};
+
 class Daemon {
 public:
     explicit Daemon(ServerConfig config, std::optional<std::string> token_override = std::nullopt);
@@ -316,6 +342,7 @@ private:
     int runtime_accept_worker_count_ = 0;
     std::chrono::steady_clock::time_point next_hid_retry_at_{};
     AuthFailureLimiter auth_failure_limiter_;
+    UsbReenumerationGrace usb_grace_;
 
     void handle_udp_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len);
     void handle_offer_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len);
@@ -339,6 +366,11 @@ private:
     Message handle_control_message(const Message& message);
     void cleanup_expired_sessions();
     void enforce_input_watchdog();
+    void update_usb_reenumeration_grace();
+    bool usb_grace_blocks_hid_retry();
+    bool begin_usb_reenumeration_grace(std::shared_ptr<PendingSession> session, const std::string& reason, bool dropped_input);
+    bool drop_input_for_usb_grace(std::shared_ptr<PendingSession> session);
+    bool handle_hid_write_failure(std::shared_ptr<PendingSession> session, const std::string& context, const std::exception& exc, bool dropped_input);
     void send_udp(const sockaddr_storage& addr, socklen_t addr_len, const Message& message);
     void send_udp_error(const sockaddr_storage& addr, socklen_t addr_len, const std::string& code, const std::string& message, bool latch_error = true);
     bool ensure_hid_available(bool force = false);

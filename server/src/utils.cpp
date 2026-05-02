@@ -136,6 +136,43 @@ void AuthFailureLimiter::record_success(const std::string& source) {
     sources_.erase(source);
 }
 
+UsbReenumerationGrace::UsbReenumerationGrace(std::chrono::seconds duration)
+    : duration_(duration) {}
+
+bool UsbReenumerationGrace::begin(const std::string& session_id, Clock::time_point now) {
+    if (active_for(session_id, now)) return false;
+    session_id_ = session_id;
+    deadline_ = now + duration_;
+    dropped_input_ = false;
+    release_needed_ = false;
+    return true;
+}
+
+bool UsbReenumerationGrace::active_for(const std::string& session_id, Clock::time_point now) const {
+    return !session_id_.empty() && session_id_ == session_id && now < deadline_;
+}
+
+bool UsbReenumerationGrace::expired(Clock::time_point now) const {
+    return !session_id_.empty() && now >= deadline_;
+}
+
+void UsbReenumerationGrace::note_dropped_input() {
+    if (session_id_.empty()) return;
+    dropped_input_ = true;
+    release_needed_ = true;
+}
+
+void UsbReenumerationGrace::note_release_needed() {
+    if (!session_id_.empty()) release_needed_ = true;
+}
+
+void UsbReenumerationGrace::clear() {
+    session_id_.clear();
+    deadline_ = {};
+    dropped_input_ = false;
+    release_needed_ = false;
+}
+
 }  // namespace hidmi
 
 namespace hidmi::internal {
