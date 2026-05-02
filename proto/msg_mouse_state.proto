@@ -10,4 +10,6 @@ message MouseState {
   sint32 wheel_delta_x = 5;
   bool has_reliable_edge = 6;
   fixed64 sample_mono_us = 7;
+  sint32 rel_dx = 8;
+  sint32 rel_dy = 9;
 }

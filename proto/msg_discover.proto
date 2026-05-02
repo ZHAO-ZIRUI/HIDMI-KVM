@@ -3,6 +3,7 @@ syntax = "proto3";
 package hidmi.kvm.input.v1;
 
 import "enum_interface_type.proto";
+import "enum_hid_status.proto";
 
 message Discover {
   fixed64 server_id = 1;
@@ -16,4 +17,9 @@ message Discover {
 
   bytes challenge_nonce = 20;
   bool is_busy = 21;
+  HidStatus hid_status = 22;
+  bool hid_available = 23;
+  bool absolute_pointer_available = 24;
+  bool relative_pointer_available = 25;
+  repeated string capabilities = 26;
 }

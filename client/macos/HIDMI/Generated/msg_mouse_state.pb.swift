@@ -39,6 +39,10 @@ struct Hidmi_Kvm_Input_V1_MouseState: Sendable {
 
   var sampleMonoUs: UInt64 = 0
 
+  var relDx: Int32 = 0
+
+  var relDy: Int32 = 0
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -50,7 +54,7 @@ fileprivate let _protobuf_package = "hidmi.kvm.input.v1"
 
 extension Hidmi_Kvm_Input_V1_MouseState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".MouseState"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}abs_x\0\u{3}abs_y\0\u{3}buttons_mask\0\u{3}wheel_delta_y\0\u{3}wheel_delta_x\0\u{3}has_reliable_edge\0\u{3}sample_mono_us\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}abs_x\0\u{3}abs_y\0\u{3}buttons_mask\0\u{3}wheel_delta_y\0\u{3}wheel_delta_x\0\u{3}has_reliable_edge\0\u{3}sample_mono_us\0\u{3}rel_dx\0\u{3}rel_dy\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -65,6 +69,8 @@ extension Hidmi_Kvm_Input_V1_MouseState: SwiftProtobuf.Message, SwiftProtobuf._M
       case 5: try { try decoder.decodeSingularSInt32Field(value: &self.wheelDeltaX) }()
       case 6: try { try decoder.decodeSingularBoolField(value: &self.hasReliableEdge_p) }()
       case 7: try { try decoder.decodeSingularFixed64Field(value: &self.sampleMonoUs) }()
+      case 8: try { try decoder.decodeSingularSInt32Field(value: &self.relDx) }()
+      case 9: try { try decoder.decodeSingularSInt32Field(value: &self.relDy) }()
       default: break
       }
     }
@@ -92,6 +98,12 @@ extension Hidmi_Kvm_Input_V1_MouseState: SwiftProtobuf.Message, SwiftProtobuf._M
     if self.sampleMonoUs != 0 {
       try visitor.visitSingularFixed64Field(value: self.sampleMonoUs, fieldNumber: 7)
     }
+    if self.relDx != 0 {
+      try visitor.visitSingularSInt32Field(value: self.relDx, fieldNumber: 8)
+    }
+    if self.relDy != 0 {
+      try visitor.visitSingularSInt32Field(value: self.relDy, fieldNumber: 9)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -103,6 +115,8 @@ extension Hidmi_Kvm_Input_V1_MouseState: SwiftProtobuf.Message, SwiftProtobuf._M
     if lhs.wheelDeltaX != rhs.wheelDeltaX {return false}
     if lhs.hasReliableEdge_p != rhs.hasReliableEdge_p {return false}
     if lhs.sampleMonoUs != rhs.sampleMonoUs {return false}
+    if lhs.relDx != rhs.relDx {return false}
+    if lhs.relDy != rhs.relDy {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

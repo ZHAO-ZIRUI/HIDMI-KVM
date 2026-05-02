@@ -48,6 +48,16 @@ struct Hidmi_Kvm_Input_V1_Discover: Sendable {
 
   var isBusy: Bool = false
 
+  var hidStatus: Hidmi_Kvm_Input_V1_HidStatus = .unknown
+
+  var hidAvailable: Bool = false
+
+  var absolutePointerAvailable: Bool = false
+
+  var relativePointerAvailable: Bool = false
+
+  var capabilities: [String] = []
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -59,7 +69,7 @@ fileprivate let _protobuf_package = "hidmi.kvm.input.v1"
 
 extension Hidmi_Kvm_Input_V1_Discover: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".Discover"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}server_id\0\u{3}boot_id\0\u{3}server_name\0\u{3}interface_type\0\u{4}\u{6}tcp_accept_min\0\u{3}tcp_accept_max\0\u{3}tcp_rejected\0\u{4}\u{8}challenge_nonce\0\u{3}is_busy\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}server_id\0\u{3}boot_id\0\u{3}server_name\0\u{3}interface_type\0\u{4}\u{6}tcp_accept_min\0\u{3}tcp_accept_max\0\u{3}tcp_rejected\0\u{4}\u{8}challenge_nonce\0\u{3}is_busy\0\u{3}hid_status\0\u{3}hid_available\0\u{3}absolute_pointer_available\0\u{3}relative_pointer_available\0\u{1}capabilities\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -76,6 +86,11 @@ extension Hidmi_Kvm_Input_V1_Discover: SwiftProtobuf.Message, SwiftProtobuf._Mes
       case 12: try { try decoder.decodeRepeatedFixed32Field(value: &self.tcpRejected) }()
       case 20: try { try decoder.decodeSingularBytesField(value: &self.challengeNonce) }()
       case 21: try { try decoder.decodeSingularBoolField(value: &self.isBusy) }()
+      case 22: try { try decoder.decodeSingularEnumField(value: &self.hidStatus) }()
+      case 23: try { try decoder.decodeSingularBoolField(value: &self.hidAvailable) }()
+      case 24: try { try decoder.decodeSingularBoolField(value: &self.absolutePointerAvailable) }()
+      case 25: try { try decoder.decodeSingularBoolField(value: &self.relativePointerAvailable) }()
+      case 26: try { try decoder.decodeRepeatedStringField(value: &self.capabilities) }()
       default: break
       }
     }
@@ -109,6 +124,21 @@ extension Hidmi_Kvm_Input_V1_Discover: SwiftProtobuf.Message, SwiftProtobuf._Mes
     if self.isBusy != false {
       try visitor.visitSingularBoolField(value: self.isBusy, fieldNumber: 21)
     }
+    if self.hidStatus != .unknown {
+      try visitor.visitSingularEnumField(value: self.hidStatus, fieldNumber: 22)
+    }
+    if self.hidAvailable != false {
+      try visitor.visitSingularBoolField(value: self.hidAvailable, fieldNumber: 23)
+    }
+    if self.absolutePointerAvailable != false {
+      try visitor.visitSingularBoolField(value: self.absolutePointerAvailable, fieldNumber: 24)
+    }
+    if self.relativePointerAvailable != false {
+      try visitor.visitSingularBoolField(value: self.relativePointerAvailable, fieldNumber: 25)
+    }
+    if !self.capabilities.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.capabilities, fieldNumber: 26)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -122,6 +152,11 @@ extension Hidmi_Kvm_Input_V1_Discover: SwiftProtobuf.Message, SwiftProtobuf._Mes
     if lhs.tcpRejected != rhs.tcpRejected {return false}
     if lhs.challengeNonce != rhs.challengeNonce {return false}
     if lhs.isBusy != rhs.isBusy {return false}
+    if lhs.hidStatus != rhs.hidStatus {return false}
+    if lhs.hidAvailable != rhs.hidAvailable {return false}
+    if lhs.absolutePointerAvailable != rhs.absolutePointerAvailable {return false}
+    if lhs.relativePointerAvailable != rhs.relativePointerAvailable {return false}
+    if lhs.capabilities != rhs.capabilities {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

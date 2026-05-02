@@ -151,12 +151,38 @@ void test_protobuf_udp_discover_and_offer_helpers() {
     discover->set_tcp_accept_min(hidmi::kMinTcpPort);
     discover->set_tcp_accept_max(hidmi::kMinTcpPort + 2);
     discover->set_challenge_nonce("0123456789abcdef");
+    discover->set_hid_status(hidpb::HID_STATUS_ABSOLUTE_DEGRADED);
+    discover->set_hid_available(true);
+    discover->set_absolute_pointer_available(false);
+    discover->set_relative_pointer_available(true);
+    discover->add_capabilities("keyboard");
+    discover->add_capabilities("mouse");
+    discover->add_capabilities("relative_pointer");
 
     hidpb::UdpPacket parsed;
     expect(parsed.ParseFromString(packet.SerializeAsString()), "UDP protobuf parse failed");
     expect(parsed.protocol_version() == hidmi::kProtoVersion, "UDP protocol version mismatch");
     expect(parsed.body_case() == hidpb::UdpPacket::kDiscover, "UDP packet should carry Discover");
     expect(parsed.discover().tcp_accept_min() == hidmi::kMinTcpPort, "Discover TCP minimum mismatch");
+    expect(parsed.discover().hid_status() == hidpb::HID_STATUS_ABSOLUTE_DEGRADED, "Discover HID status mismatch");
+    expect(parsed.discover().hid_available(), "Discover HID availability mismatch");
+    expect(!parsed.discover().absolute_pointer_available(), "Discover absolute availability mismatch");
+    expect(parsed.discover().relative_pointer_available(), "Discover relative availability mismatch");
+    expect(parsed.discover().capabilities_size() == 3, "Discover capability count mismatch");
+
+    hidpb::MouseState mouse;
+    mouse.set_abs_x(65000);
+    mouse.set_abs_y(64000);
+    mouse.set_rel_dx(-12);
+    mouse.set_rel_dy(9);
+    hidpb::MouseState parsed_mouse;
+    expect(parsed_mouse.ParseFromString(mouse.SerializeAsString()), "MouseState protobuf parse failed");
+    expect(parsed_mouse.abs_x() == 65000, "MouseState abs_x mismatch");
+    expect(parsed_mouse.rel_dx() == -12, "MouseState rel_dx mismatch");
+    expect(parsed_mouse.rel_dy() == 9, "MouseState rel_dy mismatch");
+
+    expect(hidpb::HID_UNAVAILABLE == static_cast<hidpb::OfferRejectReason>(8), "HID_UNAVAILABLE enum value mismatch");
+    expect(hidpb::AUTH_RATE_LIMITED == static_cast<hidpb::OfferRejectReason>(9), "AUTH_RATE_LIMITED enum value mismatch");
 
     expect(hidmi::internal::valid_offer_tcp_ports(hidmi::kMinTcpPort, hidmi::kMinTcpPort + 1, hidmi::kMinTcpPort + 2), "valid Offer TCP ports rejected");
     expect(!hidmi::internal::valid_offer_tcp_ports(hidmi::kMinTcpPort, hidmi::kMinTcpPort, hidmi::kMinTcpPort + 1), "duplicate Offer TCP ports accepted");

@@ -29,6 +29,7 @@
 		3A1010152C00000100000001 /* enum_channel_id.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020252C00000100000001 /* enum_channel_id.pb.swift */; };
 		3A1010162C00000100000001 /* enum_error_severity.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020262C00000100000001 /* enum_error_severity.pb.swift */; };
 		3A1010172C00000100000001 /* enum_goodbye_reason.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020272C00000100000001 /* enum_goodbye_reason.pb.swift */; };
+		3A10102C2C00000100000001 /* enum_hid_status.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A10203C2C00000100000001 /* enum_hid_status.pb.swift */; };
 		3A1010182C00000100000001 /* enum_interface_type.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020282C00000100000001 /* enum_interface_type.pb.swift */; };
 		3A1010192C00000100000001 /* enum_keyboard_special_id.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020292C00000100000001 /* enum_keyboard_special_id.pb.swift */; };
 		3A10101A2C00000100000001 /* enum_offer_reject_reason.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A10202A2C00000100000001 /* enum_offer_reject_reason.pb.swift */; };
@@ -89,6 +90,7 @@
 		3A1020252C00000100000001 /* enum_channel_id.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = enum_channel_id.pb.swift; sourceTree = "<group>"; };
 		3A1020262C00000100000001 /* enum_error_severity.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = enum_error_severity.pb.swift; sourceTree = "<group>"; };
 		3A1020272C00000100000001 /* enum_goodbye_reason.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = enum_goodbye_reason.pb.swift; sourceTree = "<group>"; };
+		3A10203C2C00000100000001 /* enum_hid_status.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = enum_hid_status.pb.swift; sourceTree = "<group>"; };
 		3A1020282C00000100000001 /* enum_interface_type.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = enum_interface_type.pb.swift; sourceTree = "<group>"; };
 		3A1020292C00000100000001 /* enum_keyboard_special_id.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = enum_keyboard_special_id.pb.swift; sourceTree = "<group>"; };
 		3A10202A2C00000100000001 /* enum_offer_reject_reason.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = enum_offer_reject_reason.pb.swift; sourceTree = "<group>"; };
@@ -175,6 +177,7 @@
 				3A1020252C00000100000001 /* enum_channel_id.pb.swift */,
 				3A1020262C00000100000001 /* enum_error_severity.pb.swift */,
 				3A1020272C00000100000001 /* enum_goodbye_reason.pb.swift */,
+				3A10203C2C00000100000001 /* enum_hid_status.pb.swift */,
 				3A1020282C00000100000001 /* enum_interface_type.pb.swift */,
 				3A1020292C00000100000001 /* enum_keyboard_special_id.pb.swift */,
 				3A10202A2C00000100000001 /* enum_offer_reject_reason.pb.swift */,
@@ -388,6 +391,7 @@
 				3A1010152C00000100000001 /* enum_channel_id.pb.swift in Sources */,
 				3A1010162C00000100000001 /* enum_error_severity.pb.swift in Sources */,
 				3A1010172C00000100000001 /* enum_goodbye_reason.pb.swift in Sources */,
+				3A10102C2C00000100000001 /* enum_hid_status.pb.swift in Sources */,
 				3A1010182C00000100000001 /* enum_interface_type.pb.swift in Sources */,
 				3A1010192C00000100000001 /* enum_keyboard_special_id.pb.swift in Sources */,
 				3A10101A2C00000100000001 /* enum_offer_reject_reason.pb.swift in Sources */,

@@ -30,6 +30,8 @@ enum Hidmi_Kvm_Input_V1_OfferRejectReason: SwiftProtobuf.Enum, Swift.CaseIterabl
   case protocolVersionMismatch // = 5
   case invalidPort // = 6
   case internalError // = 7
+  case hidUnavailable // = 8
+  case authRateLimited // = 9
   case UNRECOGNIZED(Int)
 
   init() {
@@ -46,6 +48,8 @@ enum Hidmi_Kvm_Input_V1_OfferRejectReason: SwiftProtobuf.Enum, Swift.CaseIterabl
     case 5: self = .protocolVersionMismatch
     case 6: self = .invalidPort
     case 7: self = .internalError
+    case 8: self = .hidUnavailable
+    case 9: self = .authRateLimited
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -60,6 +64,8 @@ enum Hidmi_Kvm_Input_V1_OfferRejectReason: SwiftProtobuf.Enum, Swift.CaseIterabl
     case .protocolVersionMismatch: return 5
     case .invalidPort: return 6
     case .internalError: return 7
+    case .hidUnavailable: return 8
+    case .authRateLimited: return 9
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -74,6 +80,8 @@ enum Hidmi_Kvm_Input_V1_OfferRejectReason: SwiftProtobuf.Enum, Swift.CaseIterabl
     .protocolVersionMismatch,
     .invalidPort,
     .internalError,
+    .hidUnavailable,
+    .authRateLimited,
   ]
 
 }
@@ -81,5 +89,5 @@ enum Hidmi_Kvm_Input_V1_OfferRejectReason: SwiftProtobuf.Enum, Swift.CaseIterabl
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 extension Hidmi_Kvm_Input_V1_OfferRejectReason: SwiftProtobuf._ProtoNameProviding {
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0OFFER_REJECT_NONE\0\u{1}TOKEN_AUTH_FAILED\0\u{1}TCP_OCCUPIED\0\u{1}SERVER_ID_MISMATCH\0\u{1}SERVER_BUSY\0\u{1}PROTOCOL_VERSION_MISMATCH\0\u{1}INVALID_PORT\0\u{1}INTERNAL_ERROR\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0OFFER_REJECT_NONE\0\u{1}TOKEN_AUTH_FAILED\0\u{1}TCP_OCCUPIED\0\u{1}SERVER_ID_MISMATCH\0\u{1}SERVER_BUSY\0\u{1}PROTOCOL_VERSION_MISMATCH\0\u{1}INVALID_PORT\0\u{1}INTERNAL_ERROR\0\u{1}HID_UNAVAILABLE\0\u{1}AUTH_RATE_LIMITED\0")
 }

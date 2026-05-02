@@ -792,6 +792,10 @@ enum HIDMIClient {
             return .server(code: "SERVER_ID_MISMATCH", detail: "Server identity changed")
         case .serverBusy:
             return .server(code: "SERVER_BUSY", detail: String(localized: "error.server_busy"))
+        case .hidUnavailable:
+            return .server(code: "HID_UNAVAILABLE", detail: String(localized: "error.hid_unavailable"))
+        case .authRateLimited:
+            return .server(code: "AUTH_RATE_LIMITED", detail: String(localized: "error.hello_rejected"))
         case .protocolVersionMismatch:
             return .server(code: "PROTOCOL_VERSION_MISMATCH", detail: String(localized: "error.protocol_failure"))
         case .invalidPort:

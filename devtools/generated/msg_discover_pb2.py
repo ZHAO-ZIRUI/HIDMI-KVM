@@ -23,15 +23,16 @@ _sym_db = _symbol_database.Default()
 
 
 import enum_interface_type_pb2 as enum__interface__type__pb2
+import enum_hid_status_pb2 as enum__hid__status__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12msg_discover.proto\x12\x12hidmi.kvm.input.v1\x1a\x19\x65num_interface_type.proto\"\xee\x01\n\x08\x44iscover\x12\x11\n\tserver_id\x18\x01 \x01(\x06\x12\x0f\n\x07\x62oot_id\x18\x02 \x01(\x06\x12\x13\n\x0bserver_name\x18\x03 \x01(\t\x12\x39\n\x0einterface_type\x18\x04 \x01(\x0e\x32!.hidmi.kvm.input.v1.InterfaceType\x12\x16\n\x0etcp_accept_min\x18\n \x01(\x07\x12\x16\n\x0etcp_accept_max\x18\x0b \x01(\x07\x12\x14\n\x0ctcp_rejected\x18\x0c \x03(\x07\x12\x17\n\x0f\x63hallenge_nonce\x18\x14 \x01(\x0c\x12\x0f\n\x07is_busy\x18\x15 \x01(\x08\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12msg_discover.proto\x12\x12hidmi.kvm.input.v1\x1a\x19\x65num_interface_type.proto\x1a\x15\x65num_hid_status.proto\"\x96\x03\n\x08\x44iscover\x12\x11\n\tserver_id\x18\x01 \x01(\x06\x12\x0f\n\x07\x62oot_id\x18\x02 \x01(\x06\x12\x13\n\x0bserver_name\x18\x03 \x01(\t\x12\x39\n\x0einterface_type\x18\x04 \x01(\x0e\x32!.hidmi.kvm.input.v1.InterfaceType\x12\x16\n\x0etcp_accept_min\x18\n \x01(\x07\x12\x16\n\x0etcp_accept_max\x18\x0b \x01(\x07\x12\x14\n\x0ctcp_rejected\x18\x0c \x03(\x07\x12\x17\n\x0f\x63hallenge_nonce\x18\x14 \x01(\x0c\x12\x0f\n\x07is_busy\x18\x15 \x01(\x08\x12\x31\n\nhid_status\x18\x16 \x01(\x0e\x32\x1d.hidmi.kvm.input.v1.HidStatus\x12\x15\n\rhid_available\x18\x17 \x01(\x08\x12\"\n\x1a\x61\x62solute_pointer_available\x18\x18 \x01(\x08\x12\"\n\x1arelative_pointer_available\x18\x19 \x01(\x08\x12\x14\n\x0c\x63\x61pabilities\x18\x1a \x03(\tb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'msg_discover_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_DISCOVER']._serialized_start=70
-  _globals['_DISCOVER']._serialized_end=308
+  _globals['_DISCOVER']._serialized_start=93
+  _globals['_DISCOVER']._serialized_end=499
 # @@protoc_insertion_point(module_scope)
