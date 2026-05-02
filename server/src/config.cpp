@@ -5,8 +5,47 @@ namespace fs = std::filesystem;
 namespace hidmi {
 using namespace internal;
 
+namespace {
+
+constexpr const char* kAllowRuntimeTestOverridesEnv = "HIDMI_ALLOW_RUNTIME_TEST_OVERRIDES";
+constexpr const char* kUdcStatePathOverrideEnv = "HIDMI_UDC_STATE_PATH_OVERRIDE";
+
+fs::path absolute_lexical_path(const fs::path& path) {
+    std::error_code ec;
+    fs::path absolute = path.is_absolute() ? path : fs::absolute(path, ec);
+    if (ec) absolute = path;
+    return absolute.lexically_normal();
+}
+
+bool path_has_prefix(const fs::path& path, const fs::path& prefix) {
+    auto path_it = path.begin();
+    auto prefix_it = prefix.begin();
+    for (; prefix_it != prefix.end(); ++prefix_it, ++path_it) {
+        if (path_it == path.end() || *path_it != *prefix_it) return false;
+    }
+    return true;
+}
+
+bool is_transient_udc_state_path(const fs::path& path) {
+    fs::path normalized = absolute_lexical_path(path);
+    return path_has_prefix(normalized, fs::path("/run")) ||
+           path_has_prefix(normalized, fs::path("/tmp")) ||
+           path_has_prefix(normalized, fs::path("/var/tmp"));
+}
+
+bool runtime_test_overrides_allowed() {
+    const char* value = std::getenv(kAllowRuntimeTestOverridesEnv);
+    return value && std::string(value) == "1";
+}
+
+}  // namespace
+
 ServerConfig load_server_config(const fs::path& path) {
     return parse_server_config(read_file(path));
+}
+
+ServerConfig load_runtime_server_config(const fs::path& path) {
+    return apply_runtime_test_overrides(load_server_config(path));
 }
 
 ServerConfig parse_server_config(const std::string& text) {
@@ -29,6 +68,30 @@ ServerConfig parse_server_config(const std::string& text) {
     cfg.leds.primary_path = table_string(leds, "primary", cfg.leds.primary_path);
     cfg.leds.secondary_path = table_string(leds, "secondary", cfg.leds.secondary_path);
     return cfg;
+}
+
+ServerConfig apply_runtime_test_overrides(ServerConfig config) {
+    if (!runtime_test_overrides_allowed()) return config;
+    const char* udc_override = std::getenv(kUdcStatePathOverrideEnv);
+    if (udc_override && *udc_override) {
+        config.hid.udc_state_path = udc_override;
+    }
+    return config;
+}
+
+void validate_persistent_install_config(const ServerConfig& config) {
+    fs::path udc_path = config.hid.udc_state_path;
+    if (is_transient_udc_state_path(udc_path)) {
+        throw std::runtime_error(
+            "persistent install config must not use transient/test UDC state path " + udc_path.string() +
+            "; use HIDMI_UDC_STATE_PATH_OVERRIDE with HIDMI_ALLOW_RUNTIME_TEST_OVERRIDES=1 for smoke tests");
+    }
+    std::string error;
+    (void)read_file_no_throw(udc_path, &error);
+    if (!error.empty()) {
+        throw std::runtime_error(
+            "persistent install config UDC state path is not readable: " + udc_path.string() + ": " + error);
+    }
 }
 
 std::string normalize_token_file(const std::string& text, const std::string& token_path) {

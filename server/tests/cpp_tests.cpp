@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -24,6 +25,16 @@ void expect(bool value, const std::string& message) {
     if (!value) throw std::runtime_error(message);
 }
 
+void expect_throws_contains(const std::string& expected, const std::function<void()>& action, const std::string& message) {
+    try {
+        action();
+    } catch (const std::exception& exc) {
+        if (std::string(exc.what()).find(expected) != std::string::npos) return;
+        throw std::runtime_error(message + ": unexpected error: " + exc.what());
+    }
+    throw std::runtime_error(message + ": did not throw");
+}
+
 std::string read_file(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
@@ -39,7 +50,8 @@ std::string config_text(
     const std::string& token_file = "/etc/hidmi/token",
     bool leds_enabled = true,
     const std::string& primary_led = "/sys/class/leds/primary",
-    const std::string& secondary_led = "/sys/class/leds/secondary") {
+    const std::string& secondary_led = "/sys/class/leds/secondary",
+    const std::string& udc_state_path = "/sys/class/udc/test/state") {
     return
         "[service]\n"
         "name = \"Test HIDMI\"\n"
@@ -52,7 +64,7 @@ std::string config_text(
         "hid_keyboard_path = \"/dev/hidg0\"\n"
         "hid_mouse_path = \"/dev/hidg1\"\n"
         "hid_absolute_mouse_path = \"/dev/hidg2\"\n"
-        "udc_state_path = \"/sys/class/udc/test/state\"\n"
+        "udc_state_path = \"" + udc_state_path + "\"\n"
         "\n"
         "[board.leds]\n"
         "enabled = " + std::string(leds_enabled ? "true" : "false") + "\n"
@@ -107,6 +119,57 @@ void test_profile_resolution() {
     fs::path profile = conf / "sample-board.toml";
     write_file(profile, config_text());
     expect(hidmi::resolve_profile_config("sample-board", root) == fs::absolute(profile), "profile resolution failed");
+    fs::remove_all(root);
+}
+
+void test_persistent_install_config_validation() {
+    const char* home = std::getenv("HOME");
+    fs::path root = (home && *home ? fs::path(home) : fs::current_path()) / (".hidmi-install-config-test-" + hidmi::random_b64url(8));
+    fs::path valid_udc = root / "sys" / "class" / "udc" / "test" / "state";
+    write_file(valid_udc, "configured\n");
+
+    auto valid_cfg = hidmi::parse_server_config(config_text("/etc/hidmi/token", true, "/sys/class/leds/primary", "/sys/class/leds/secondary", valid_udc.string()));
+    hidmi::validate_persistent_install_config(valid_cfg);
+
+    for (const char* transient : {"/run/hidmi-udc-state", "/tmp/foo/state", "/var/tmp/foo/state"}) {
+        auto cfg = hidmi::parse_server_config(config_text("/etc/hidmi/token", true, "/sys/class/leds/primary", "/sys/class/leds/secondary", transient));
+        expect_throws_contains("transient/test UDC state path", [&] {
+            hidmi::validate_persistent_install_config(cfg);
+        }, "persistent install should reject transient UDC path " + std::string(transient));
+    }
+
+    auto missing_cfg = hidmi::parse_server_config(config_text("/etc/hidmi/token", true, "/sys/class/leds/primary", "/sys/class/leds/secondary", (root / "missing-state").string()));
+    expect_throws_contains("not readable", [&] {
+        hidmi::validate_persistent_install_config(missing_cfg);
+    }, "persistent install should reject unreadable UDC path");
+
+    fs::remove_all(root);
+}
+
+void test_runtime_udc_state_override() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-runtime-override-test-" + hidmi::random_b64url(8));
+    fs::path config = root / "config.toml";
+    fs::path installed_udc = root / "installed-state";
+    fs::path override_udc = root / "override-state";
+    write_file(installed_udc, "configured\n");
+    write_file(override_udc, "not attached\n");
+    write_file(config, config_text("/etc/hidmi/token", true, "/sys/class/leds/primary", "/sys/class/leds/secondary", installed_udc.string()));
+
+    unsetenv("HIDMI_ALLOW_RUNTIME_TEST_OVERRIDES");
+    unsetenv("HIDMI_UDC_STATE_PATH_OVERRIDE");
+    auto cfg = hidmi::load_runtime_server_config(config);
+    expect(cfg.hid.udc_state_path == installed_udc.string(), "runtime config should use installed UDC path by default");
+
+    setenv("HIDMI_UDC_STATE_PATH_OVERRIDE", override_udc.c_str(), 1);
+    cfg = hidmi::load_runtime_server_config(config);
+    expect(cfg.hid.udc_state_path == installed_udc.string(), "runtime UDC override should be ignored unless explicitly allowed");
+
+    setenv("HIDMI_ALLOW_RUNTIME_TEST_OVERRIDES", "1", 1);
+    cfg = hidmi::load_runtime_server_config(config);
+    expect(cfg.hid.udc_state_path == override_udc.string(), "runtime UDC override should apply when explicitly allowed");
+
+    unsetenv("HIDMI_ALLOW_RUNTIME_TEST_OVERRIDES");
+    unsetenv("HIDMI_UDC_STATE_PATH_OVERRIDE");
     fs::remove_all(root);
 }
 
@@ -425,6 +488,7 @@ void test_units() {
     auto service = hidmi::render_hidmi_service(paths);
     auto gadget = hidmi::render_gadget_service(paths);
     expect(service.find("ExecStart=/usr/local/bin/hidmi daemon --config /etc/hidmi/current/conf/installed.toml") != std::string::npos, "daemon unit path mismatch");
+    expect(service.find("EnvironmentFile=-/run/hidmi/hidmi.env") != std::string::npos, "daemon unit should allow runtime smoke-test environment overrides");
     expect(service.find("Requires=hidmi-gadget.service") == std::string::npos, "daemon unit should not require gadget setup");
     expect(service.find("Wants=network-online.target hidmi-gadget.service") != std::string::npos, "daemon unit should still want gadget setup");
     expect(gadget.find("gadget-setup --config") != std::string::npos, "gadget setup unit mismatch");
@@ -609,6 +673,8 @@ void test_status_table() {
     expect(text.find("| Service hidmi.service") != std::string::npos, "status table missing service row");
     expect(text.find("| HID Keyboard") != std::string::npos, "status table missing HID row");
     expect(text.find("| HID Available") != std::string::npos, "status table missing HID availability row");
+    expect(text.find("| UDC State Path") != std::string::npos, "status table missing UDC state path row");
+    expect(text.find("ERR(UDC path missing)") != std::string::npos, "missing UDC state path should not look like a HID node error");
     expect(text.find("| UDP Discovery") != std::string::npos, "status table missing discovery row");
     expect(text.find("| TCP Accept") != std::string::npos, "status table missing TCP row");
     expect(text.find("| LED Enabled") != std::string::npos, "status table missing LED enabled row");
@@ -620,6 +686,31 @@ void test_status_table() {
     expect(text.find("| Last Connected") != std::string::npos, "status table missing last client row");
     expect(text.find("ERR(proto mismatch)") != std::string::npos, "status table missing proto mismatch state");
     expect(text.find("2026-01-02T03:04:05Z") != std::string::npos, "status table missing last client timestamp");
+    fs::remove_all(root);
+}
+
+void test_status_uses_runtime_udc_override() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-status-override-test-" + hidmi::random_b64url(8));
+    hidmi::InstallPaths paths;
+    paths.etc_dir = root / "etc";
+    paths.install_root = root / "current";
+    paths.runtime_status_path = root / "run" / "status.json";
+    paths.status_requires_root = false;
+    fs::path override_udc = root / "override-state";
+    write_file(override_udc, "configured\n");
+    write_file(paths.installed_config_path(), config_text(paths.token_path().string(), true, "/sys/class/leds/primary", "/sys/class/leds/secondary", (root / "missing-state").string()));
+    write_file(paths.runtime_status_path, "{\"daemon_running\":true,\"tcp_connected\":false,\"client_connected\":false,\"updated_at_ms\":9999999999999}\n");
+
+    setenv("HIDMI_ALLOW_RUNTIME_TEST_OVERRIDES", "1", 1);
+    setenv("HIDMI_UDC_STATE_PATH_OVERRIDE", override_udc.c_str(), 1);
+    std::ostringstream out;
+    hidmi::print_status(paths, out);
+    unsetenv("HIDMI_ALLOW_RUNTIME_TEST_OVERRIDES");
+    unsetenv("HIDMI_UDC_STATE_PATH_OVERRIDE");
+
+    std::string text = out.str();
+    expect(text.find("OK(configured)") != std::string::npos, "status should read overridden UDC state path");
+    expect(text.find(override_udc.string()) != std::string::npos, "status should display the effective overridden UDC path");
     fs::remove_all(root);
 }
 
@@ -712,6 +803,8 @@ int main() {
     try {
         test_config();
         test_profile_resolution();
+        test_persistent_install_config_validation();
+        test_runtime_udc_state_override();
         test_status_json_parsing_helpers();
         test_protobuf_tcp_frame_length_prefix();
         test_protobuf_udp_discover_and_offer_helpers();
@@ -734,6 +827,7 @@ int main() {
         test_led_start_clears_outputs();
         test_led_missing_paths_are_nonfatal();
         test_status_table();
+        test_status_uses_runtime_udc_override();
         test_status_led_states();
         test_status_stale_client_connection();
         test_status_requires_sudo();

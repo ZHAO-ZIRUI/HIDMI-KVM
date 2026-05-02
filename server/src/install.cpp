@@ -50,7 +50,8 @@ InstallResult install_service(const std::optional<fs::path>& config_path_opt, co
         throw std::runtime_error("system binary missing at " + paths.system_binary.string() + "; run sudo make install first");
     }
     fs::path config_path = config_path_opt ? fs::absolute(*config_path_opt) : fs::absolute(discover_config());
-    (void)load_server_config(config_path);
+    ServerConfig config = load_server_config(config_path);
+    validate_persistent_install_config(config);
     std::string token = token_opt.value_or(random_b64url(32));
     run_system("systemctl stop hidmi.service >/dev/null 2>&1");
     run_system("systemctl stop hidmi-gadget.service >/dev/null 2>&1");
@@ -93,6 +94,7 @@ std::string render_hidmi_service(const InstallPaths& paths) {
            "\n"
            "[Service]\n"
            "Type=simple\n"
+           "EnvironmentFile=-/run/hidmi/hidmi.env\n"
            "WorkingDirectory=" + paths.install_root.string() + "\n"
            "ExecStart=" + paths.system_binary.string() + " daemon --config " + paths.installed_config_path().string() + "\n"
            "Restart=on-failure\n"

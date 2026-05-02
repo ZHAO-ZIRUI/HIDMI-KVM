@@ -74,7 +74,7 @@ int cli_main(const std::vector<std::string>& args, std::ostream& out, std::ostre
             ensure_root("run");
             auto config_path = config_from_cli(args, false);
             auto token_arg = option_value(args, "--token");
-            ServerConfig cfg = load_server_config(config_path);
+            ServerConfig cfg = load_runtime_server_config(config_path);
             gadget_setup();
             Daemon daemon(cfg, token_arg);
             install_daemon_signal_handlers();
@@ -90,7 +90,7 @@ int cli_main(const std::vector<std::string>& args, std::ostream& out, std::ostre
         if (command == "daemon") {
             auto config_arg = option_value(args, "--config");
             if (!config_arg) throw std::runtime_error("--config is required");
-            ServerConfig cfg = load_server_config(*config_arg);
+            ServerConfig cfg = load_runtime_server_config(*config_arg);
             Daemon daemon(cfg);
             install_daemon_signal_handlers();
             int rc = daemon.serve_forever();

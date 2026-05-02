@@ -55,7 +55,10 @@ struct ServerConfig {
 
 ServerConfig load_server_config(const std::filesystem::path& path);
 ServerConfig parse_server_config(const std::string& text);
+ServerConfig load_runtime_server_config(const std::filesystem::path& path);
+ServerConfig apply_runtime_test_overrides(ServerConfig config);
 std::string normalize_token_file(const std::string& text, const std::string& token_path);
+void validate_persistent_install_config(const ServerConfig& config);
 
 class Json {
 public:

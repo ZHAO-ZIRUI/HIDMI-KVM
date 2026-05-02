@@ -241,7 +241,7 @@ int print_status(const InstallPaths& paths, std::ostream& out) {
     std::optional<ServerConfig> cfg;
     bool config_ok = false;
     try {
-        cfg = load_server_config(paths.installed_config_path());
+        cfg = load_runtime_server_config(paths.installed_config_path());
         config_ok = true;
     } catch (const std::exception& exc) {
         (void)exc;
@@ -263,18 +263,28 @@ int print_status(const InstallPaths& paths, std::ostream& out) {
 
     bool hid_available_ok = false;
     StatusCell hid_available = red("ERR(config unavailable)");
+    StatusCell udc_state_path = red("ERR(config unavailable)");
     bool udp_ok = false;
     StatusCell udp_discovery = red("ERR(config unavailable)");
     if (cfg) {
+        fs::path udc_path = cfg->hid.udc_state_path;
+        udc_state_path = cyan(udc_path.string());
         std::string udc_error;
-        std::string udc_state = trim(read_file_no_throw(cfg->hid.udc_state_path, &udc_error));
-        if (udc_error.empty() && udc_state == "configured") {
+        std::string udc_state;
+        bool udc_path_problem = false;
+        if (!path_exists(udc_path)) {
+            hid_available = red("ERR(UDC path missing)");
+            udc_path_problem = true;
+        } else {
+            udc_state = trim(read_file_no_throw(udc_path, &udc_error));
+        }
+        if (!udc_path_problem && udc_error.empty() && udc_state == "configured") {
             hid_available_ok = true;
             hid_available = green("OK(configured)");
-        } else if (udc_error.empty()) {
+        } else if (!udc_path_problem && udc_error.empty()) {
             hid_available = red("ERR" + quote_status_arg(udc_state.empty() ? "unknown" : udc_state));
-        } else {
-            hid_available = red("ERR" + quote_status_arg(udc_error));
+        } else if (!udc_path_problem && !udc_error.empty()) {
+            hid_available = red("ERR(UDC path unreadable: " + udc_error + ")");
         }
         udp_ok = udp_port_listening(cfg->udp_port);
         udp_discovery = udp_ok ? green("OK" + quote_status_arg(std::to_string(cfg->udp_port))) : red("ERR" + quote_status_arg(std::to_string(cfg->udp_port)));
@@ -347,6 +357,7 @@ int print_status(const InstallPaths& paths, std::ostream& out) {
     rows.push_back({"HID Mouse", hid_mouse});
     rows.push_back({"HID Absolute Mouse", hid_absolute});
     rows.push_back({"HID Available", hid_available});
+    rows.push_back({"UDC State Path", udc_state_path});
     rows.push_back({"HID Runtime", hid_runtime});
     rows.push_back({"", {}, true});
     rows.push_back({"UDP Discovery", udp_discovery});
