@@ -446,6 +446,18 @@ final class HIDMIControllerTests: XCTestCase {
         )
     }
 
+    func testAbsolutePointerReportsKeepRelativeFallbackDeltas() throws {
+        var mapper = RemoteInputMapper()
+        let event = try makeMouseMovedEvent(deltaX: 6, deltaY: -4)
+
+        let reports = mapper.map(
+            .mouseMoved(event, scale: CGSize(width: 2, height: 3), absolute: RemoteAbsolutePointer(x: 111, y: 222)),
+            preferAbsolute: true
+        )
+
+        XCTAssertEqual(reports, [.absoluteMouse(buttons: 0, x: 111, y: 222, dx: 12, dy: -12)])
+    }
+
     func testMouseFrameStateAssignsSeqAndSampleTimestamp() throws {
         var state = HIDMIMouseFrameState()
 
@@ -467,6 +479,32 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertEqual(second.seq, 2)
         XCTAssertEqual(second.mouseState.sampleMonoUs, 222)
         XCTAssertTrue(second.mouseState.hasReliableEdge_p)
+    }
+
+    func testMouseFrameStateCarriesRelativeFallbackDeltas() throws {
+        var state = HIDMIMouseFrameState()
+
+        let absolute = try state.makeFrame(
+            sessionID: 42,
+            report: .absoluteMouse(buttons: 0, x: 100, y: 200, dx: 7, dy: -5),
+            sampleMonoUs: 111
+        )
+        let relative = try state.makeFrame(
+            sessionID: 42,
+            report: .mouse(buttons: 1, dx: -130, dy: 128, wheel: 3),
+            sampleMonoUs: 222
+        )
+
+        XCTAssertEqual(absolute.mouseState.absX, 100)
+        XCTAssertEqual(absolute.mouseState.absY, 200)
+        XCTAssertEqual(absolute.mouseState.relDx, 7)
+        XCTAssertEqual(absolute.mouseState.relDy, -5)
+        XCTAssertEqual(relative.mouseState.absX, 100)
+        XCTAssertEqual(relative.mouseState.absY, 200)
+        XCTAssertEqual(relative.mouseState.relDx, -127)
+        XCTAssertEqual(relative.mouseState.relDy, 127)
+        XCTAssertEqual(relative.mouseState.wheelDeltaY, 3)
+        XCTAssertTrue(relative.mouseState.hasReliableEdge_p)
     }
 
     func testSendReportsSendsEachEventBatchWithoutDroppingReports() async {
@@ -2254,6 +2292,18 @@ final class HIDMIControllerTests: XCTestCase {
             clickCount: 0,
             pressure: 0
         ))
+    }
+
+    private func makeMouseMovedEvent(deltaX: Int64, deltaY: Int64) throws -> NSEvent {
+        let event = try XCTUnwrap(CGEvent(
+            mouseEventSource: CGEventSource(stateID: .hidSystemState),
+            mouseType: .mouseMoved,
+            mouseCursorPosition: .zero,
+            mouseButton: .left
+        ))
+        event.setIntegerValueField(.mouseEventDeltaX, value: deltaX)
+        event.setIntegerValueField(.mouseEventDeltaY, value: deltaY)
+        return try XCTUnwrap(NSEvent(cgEvent: event))
     }
 
     private func restoreEnvironment(_ name: String, _ previous: String?) {

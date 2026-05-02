@@ -20,7 +20,7 @@ enum RemoteInputEvent {
 enum RemoteInputReport: Equatable, Sendable {
     case keyboard(modifiers: Int, keys: [Int])
     case mouse(buttons: Int, dx: Int, dy: Int, wheel: Int)
-    case absoluteMouse(buttons: Int, x: Int, y: Int)
+    case absoluteMouse(buttons: Int, x: Int, y: Int, dx: Int = 0, dy: Int = 0)
 }
 
 struct HIDMISampledInputReport: Equatable, Sendable {
@@ -216,13 +216,13 @@ struct RemoteInputMapper {
             return [.mouse(buttons: pressedButtons, dx: 0, dy: 0, wheel: 0)]
 
         case .mouseMoved(let nsEvent, let scale, let absolute):
+            let dx = Self.scaledIntegerDelta(nsEvent.deltaX, scale: scale.width, residual: &residualMouseX)
+            let dy = Self.scaledIntegerDelta(nsEvent.deltaY, scale: scale.height, residual: &residualMouseY)
             if preferAbsolute {
                 guard let absolute else { return [] }
                 lastAbsolutePointer = absolute
-                return [.absoluteMouse(buttons: pressedButtons, x: absolute.x, y: absolute.y)]
+                return [.absoluteMouse(buttons: pressedButtons, x: absolute.x, y: absolute.y, dx: dx, dy: dy)]
             }
-            let dx = Self.scaledIntegerDelta(nsEvent.deltaX, scale: scale.width, residual: &residualMouseX)
-            let dy = Self.scaledIntegerDelta(nsEvent.deltaY, scale: scale.height, residual: &residualMouseY)
             guard dx != 0 || dy != 0 else {
                 return []
             }
@@ -233,7 +233,7 @@ struct RemoteInputMapper {
             guard wheel != 0 else {
                 return []
             }
-            return [.mouse(buttons: preferAbsolute ? 0 : pressedButtons, dx: 0, dy: 0, wheel: wheel)]
+            return [.mouse(buttons: pressedButtons, dx: 0, dy: 0, wheel: wheel)]
         }
     }
 

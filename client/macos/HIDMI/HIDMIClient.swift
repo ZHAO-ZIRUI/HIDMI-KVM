@@ -923,15 +923,21 @@ struct HIDMIMouseFrameState: Sendable {
         let buttons: Int
         let wheelY: Int
         let wheelX = 0
+        let relX: Int
+        let relY: Int
         switch report {
-        case .absoluteMouse(let nextButtons, let x, let y):
+        case .absoluteMouse(let nextButtons, let x, let y, let dx, let dy):
             buttons = nextButtons
             wheelY = 0
+            relX = dx
+            relY = dy
             lastAbsoluteX = max(0, min(x, 65_535))
             lastAbsoluteY = max(0, min(y, 65_535))
-        case .mouse(let nextButtons, _, _, let wheel):
+        case .mouse(let nextButtons, let dx, let dy, let wheel):
             buttons = nextButtons
             wheelY = wheel
+            relX = dx
+            relY = dy
         case .keyboard:
             throw HIDMIClientError.message(String(localized: "error.protocol_failure"))
         }
@@ -953,6 +959,8 @@ struct HIDMIMouseFrameState: Sendable {
                 $0.buttonsMask = nextButtons
                 $0.wheelDeltaY = Int32(max(-127, min(wheelY, 127)))
                 $0.wheelDeltaX = Int32(max(-127, min(wheelX, 127)))
+                $0.relDx = Int32(max(-127, min(relX, 127)))
+                $0.relDy = Int32(max(-127, min(relY, 127)))
                 $0.hasReliableEdge_p = hasReliableEdge
                 $0.sampleMonoUs = sampleMonoUs
             }
@@ -1416,7 +1424,7 @@ private final class HIDMITCPChannel: @unchecked Sendable {
     private let port: Int
     private let channelID: Hidmi_Kvm_Input_V1_ChannelId
     private let sessionID: UInt64
-    private let fd: Int32
+    private var fd: Int32 = -1
     private let ioLock = NSLock()
     private var defaultTimeout: TimeInterval
 
@@ -1426,18 +1434,19 @@ private final class HIDMITCPChannel: @unchecked Sendable {
         self.channelID = channelID
         self.sessionID = sessionID
         self.defaultTimeout = HIDMIProtocolLimits.normalizedTimeout(timeout)
-        fd = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-        if fd < 0 {
+        let openedFD = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        if openedFD < 0 {
             throw HIDMIClientError.posix("socket", errno)
         }
         do {
             var suppressSIGPIPE: Int32 = 1
-            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &suppressSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(openedFD, SOL_SOCKET, SO_NOSIGPIPE, &suppressSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
             var noDelay: Int32 = 1
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &noDelay, socklen_t(MemoryLayout<Int32>.size))
-            try HIDMIClient.setTimeout(timeout, fd: fd)
+            setsockopt(openedFD, IPPROTO_TCP, TCP_NODELAY, &noDelay, socklen_t(MemoryLayout<Int32>.size))
+            try HIDMIClient.setTimeout(timeout, fd: openedFD)
+            fd = openedFD
         } catch {
-            Darwin.close(fd)
+            Darwin.close(openedFD)
             throw error
         }
     }
@@ -1448,13 +1457,23 @@ private final class HIDMITCPChannel: @unchecked Sendable {
 
     func open() throws {
         var address = try HIDMIClient.ipv4Address(host: host, port: port)
+        ioLock.lock()
+        let currentFD: Int32
+        do {
+            currentFD = try openFDUnlocked()
+        } catch {
+            ioLock.unlock()
+            throw error
+        }
         let connectResult = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                Darwin.connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+                Darwin.connect(currentFD, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+        let connectErrno = errno
+        ioLock.unlock()
         if connectResult != 0 {
-            throw HIDMIClientError.posix("connect", errno)
+            throw HIDMIClientError.posix("connect", connectErrno)
         }
         let response = try sendAndReceive(Hidmi_Kvm_Input_V1_TcpFrame.with {
             $0.sessionID = sessionID
@@ -1481,21 +1500,28 @@ private final class HIDMITCPChannel: @unchecked Sendable {
         ioLock.lock()
         defer { ioLock.unlock() }
         let normalized = HIDMIProtocolLimits.normalizedTimeout(timeout)
-        try HIDMIClient.setTimeout(normalized, fd: fd)
+        try HIDMIClient.setTimeout(normalized, fd: openFDUnlocked())
         defaultTimeout = normalized
     }
 
     func withTemporaryTimeout<T>(_ timeout: TimeInterval, _ body: () throws -> T) throws -> T {
         ioLock.lock()
         let previous = defaultTimeout
-        try HIDMIClient.setTimeout(timeout, fd: fd)
+        let currentFD: Int32
+        do {
+            currentFD = try openFDUnlocked()
+            try HIDMIClient.setTimeout(timeout, fd: currentFD)
+        } catch {
+            ioLock.unlock()
+            throw error
+        }
         do {
             let value = try body()
-            try? HIDMIClient.setTimeout(previous, fd: fd)
+            try? HIDMIClient.setTimeout(previous, fd: currentFD)
             ioLock.unlock()
             return value
         } catch {
-            try? HIDMIClient.setTimeout(previous, fd: fd)
+            try? HIDMIClient.setTimeout(previous, fd: currentFD)
             ioLock.unlock()
             throw error
         }
@@ -1517,13 +1543,20 @@ private final class HIDMITCPChannel: @unchecked Sendable {
     func sendWithTemporaryTimeout(_ frame: Hidmi_Kvm_Input_V1_TcpFrame, timeout: TimeInterval) throws {
         ioLock.lock()
         let previous = defaultTimeout
-        try HIDMIClient.setTimeout(timeout, fd: fd)
+        let currentFD: Int32
+        do {
+            currentFD = try openFDUnlocked()
+            try HIDMIClient.setTimeout(timeout, fd: currentFD)
+        } catch {
+            ioLock.unlock()
+            throw error
+        }
         do {
             try writeFrameUnlocked(frame)
-            try? HIDMIClient.setTimeout(previous, fd: fd)
+            try? HIDMIClient.setTimeout(previous, fd: currentFD)
             ioLock.unlock()
         } catch {
-            try? HIDMIClient.setTimeout(previous, fd: fd)
+            try? HIDMIClient.setTimeout(previous, fd: currentFD)
             ioLock.unlock()
             throw error
         }
@@ -1534,8 +1567,21 @@ private final class HIDMITCPChannel: @unchecked Sendable {
     }
 
     func close() {
-        Darwin.shutdown(fd, SHUT_RDWR)
-        Darwin.close(fd)
+        ioLock.lock()
+        let currentFD = fd
+        fd = -1
+        ioLock.unlock()
+
+        guard currentFD >= 0 else { return }
+        Darwin.shutdown(currentFD, SHUT_RDWR)
+        Darwin.close(currentFD)
+    }
+
+    private func openFDUnlocked() throws -> Int32 {
+        guard fd >= 0 else {
+            throw HIDMIClientError.message(String(localized: "error.socket_closed"))
+        }
+        return fd
     }
 
     private func writeFrameUnlocked(_ frame: Hidmi_Kvm_Input_V1_TcpFrame) throws {
@@ -1589,8 +1635,9 @@ private final class HIDMITCPChannel: @unchecked Sendable {
         try data.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             var sent = 0
+            let currentFD = try openFDUnlocked()
             while sent < data.count {
-                let result = Darwin.write(fd, baseAddress.advanced(by: sent), data.count - sent)
+                let result = Darwin.write(currentFD, baseAddress.advanced(by: sent), data.count - sent)
                 if result < 0 {
                     if errno == EINTR { continue }
                     throw HIDMIClientError.posix("write", errno)
@@ -1606,10 +1653,11 @@ private final class HIDMITCPChannel: @unchecked Sendable {
     private func readExact(count: Int) throws -> Data {
         var data = Data(count: count)
         var received = 0
+        let currentFD = try openFDUnlocked()
         try data.withUnsafeMutableBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             while received < count {
-                let result = Darwin.read(fd, baseAddress.advanced(by: received), count - received)
+                let result = Darwin.read(currentFD, baseAddress.advanced(by: received), count - received)
                 if result < 0 {
                     if errno == EINTR { continue }
                     throw HIDMIClientError.posix("read", errno)
