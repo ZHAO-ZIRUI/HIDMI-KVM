@@ -74,6 +74,72 @@ bool is_hid_error_message(const std::string& message) {
     return false;
 }
 
+}  // namespace hidmi::internal
+
+namespace hidmi {
+
+AuthFailureLimiter::AuthFailureLimiter(
+    std::size_t max_failures,
+    std::chrono::seconds window,
+    std::chrono::seconds block_duration,
+    std::chrono::seconds log_interval)
+    : max_failures_(max_failures),
+      window_(window),
+      block_duration_(block_duration),
+      log_interval_(log_interval) {}
+
+void AuthFailureLimiter::prune(SourceState& state, std::chrono::steady_clock::time_point now) {
+    while (!state.failures.empty() && now - state.failures.front() > window_) {
+        state.failures.pop_front();
+    }
+}
+
+bool AuthFailureLimiter::should_log(SourceState& state, std::chrono::steady_clock::time_point now) {
+    if (!state.has_log_at || now - state.last_log_at >= log_interval_) {
+        state.last_log_at = now;
+        state.has_log_at = true;
+        return true;
+    }
+    return false;
+}
+
+AuthFailureLimiter::Decision AuthFailureLimiter::check(
+    const std::string& source,
+    std::chrono::steady_clock::time_point now) {
+    auto it = sources_.find(source);
+    if (it == sources_.end()) return {};
+    auto& state = it->second;
+    prune(state, now);
+    if (state.blocked_until > now) {
+        return {true, should_log(state, now), static_cast<int>(state.failures.size())};
+    }
+    if (state.failures.empty()) {
+        sources_.erase(it);
+    }
+    return {};
+}
+
+AuthFailureLimiter::Decision AuthFailureLimiter::record_failure(
+    const std::string& source,
+    std::chrono::steady_clock::time_point now) {
+    auto& state = sources_[source];
+    prune(state, now);
+    state.failures.push_back(now);
+    if (state.failures.size() > max_failures_) {
+        state.blocked_until = now + block_duration_;
+        return {true, should_log(state, now), static_cast<int>(state.failures.size())};
+    }
+    return {false, should_log(state, now), static_cast<int>(state.failures.size())};
+}
+
+void AuthFailureLimiter::record_success(const std::string& source) {
+    sources_.erase(source);
+}
+
+}  // namespace hidmi
+
+namespace hidmi::internal {
+
 std::string normalize_tcp_error_message(const std::string& message) {
     constexpr const char* kPrefix = "HID_FAILURE:";
     if (starts_with(message, kPrefix)) return message;

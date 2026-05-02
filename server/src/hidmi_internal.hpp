@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <dirent.h>
 #include <fcntl.h>
 #include <fstream>

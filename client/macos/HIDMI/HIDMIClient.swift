@@ -334,6 +334,9 @@ enum HIDMIClientError: LocalizedError, Sendable {
     }
 
     var userFacingConnectionDescription: String {
+        if case .server(let code, _) = self, code == "AUTH_RATE_LIMITED" {
+            return String(localized: "error.auth_rate_limited")
+        }
         switch connectionFailureKind {
         case .timeout:
             return String(localized: "error.device_response_timeout")
@@ -860,7 +863,7 @@ enum HIDMIClient {
         case .hidUnavailable:
             return .server(code: "HID_UNAVAILABLE", detail: String(localized: "error.hid_unavailable"))
         case .authRateLimited:
-            return .server(code: "AUTH_RATE_LIMITED", detail: String(localized: "error.hello_rejected"))
+            return .server(code: "AUTH_RATE_LIMITED", detail: String(localized: "error.auth_rate_limited"))
         case .protocolVersionMismatch:
             return .server(code: "PROTOCOL_VERSION_MISMATCH", detail: String(localized: "error.protocol_failure"))
         case .invalidPort:

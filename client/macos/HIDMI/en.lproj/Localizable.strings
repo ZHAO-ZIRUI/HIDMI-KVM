@@ -86,6 +86,7 @@
 "error.device_response_timeout" = "Device response timed out";
 "error.server_busy" = "Server is busy; retrying";
 "error.hid_unavailable" = "The controlled device HID interface is unavailable";
+"error.auth_rate_limited" = "Too many failed token attempts; retry later";
 "error.protocol_failure" = "The device returned an invalid protocol response";
 "error.peer_closed" = "The device closed the connection";
 "error.network" = "Network connection failed";

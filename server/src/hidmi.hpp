@@ -207,6 +207,42 @@ private:
     bool usb_configured() const;
 };
 
+class AuthFailureLimiter {
+public:
+    struct Decision {
+        bool rate_limited = false;
+        bool should_log = false;
+        int failure_count = 0;
+    };
+
+    AuthFailureLimiter(
+        std::size_t max_failures = 10,
+        std::chrono::seconds window = std::chrono::seconds(60),
+        std::chrono::seconds block_duration = std::chrono::seconds(30),
+        std::chrono::seconds log_interval = std::chrono::seconds(10));
+
+    Decision check(const std::string& source, std::chrono::steady_clock::time_point now);
+    Decision record_failure(const std::string& source, std::chrono::steady_clock::time_point now);
+    void record_success(const std::string& source);
+
+private:
+    struct SourceState {
+        std::deque<std::chrono::steady_clock::time_point> failures;
+        std::chrono::steady_clock::time_point blocked_until{};
+        std::chrono::steady_clock::time_point last_log_at{};
+        bool has_log_at = false;
+    };
+
+    std::size_t max_failures_;
+    std::chrono::seconds window_;
+    std::chrono::seconds block_duration_;
+    std::chrono::seconds log_interval_;
+    std::map<std::string, SourceState> sources_;
+
+    void prune(SourceState& state, std::chrono::steady_clock::time_point now);
+    bool should_log(SourceState& state, std::chrono::steady_clock::time_point now);
+};
+
 class Daemon {
 public:
     explicit Daemon(ServerConfig config, std::optional<std::string> token_override = std::nullopt);
@@ -279,6 +315,7 @@ private:
     std::string last_input_watchdog_release_at_;
     int runtime_accept_worker_count_ = 0;
     std::chrono::steady_clock::time_point next_hid_retry_at_{};
+    AuthFailureLimiter auth_failure_limiter_;
 
     void handle_udp_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len);
     void handle_offer_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len);

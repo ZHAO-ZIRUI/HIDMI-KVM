@@ -279,6 +279,27 @@ void test_interface_type_from_name() {
     expect(hidmi::internal::interface_type_from_name("usb0") == hidpb::IFACE_UNKNOWN, "unknown interface should map to unknown");
 }
 
+void test_auth_failure_limiter() {
+    using Clock = std::chrono::steady_clock;
+    hidmi::AuthFailureLimiter limiter(10, std::chrono::seconds(60), std::chrono::seconds(30), std::chrono::seconds(10));
+    auto now = Clock::time_point{} + std::chrono::seconds(1000);
+    for (int i = 0; i < 10; ++i) {
+        auto decision = limiter.record_failure("10.0.0.10", now + std::chrono::seconds(i));
+        expect(!decision.rate_limited, "auth limiter blocked before the threshold");
+    }
+    auto blocked = limiter.record_failure("10.0.0.10", now + std::chrono::seconds(10));
+    expect(blocked.rate_limited, "auth limiter should block after threshold");
+    expect(limiter.check("10.0.0.10", now + std::chrono::seconds(11)).rate_limited, "blocked source should remain limited");
+    expect(!limiter.check("10.0.0.11", now + std::chrono::seconds(11)).rate_limited, "other source should not be limited");
+    limiter.record_success("10.0.0.10");
+    expect(!limiter.check("10.0.0.10", now + std::chrono::seconds(12)).rate_limited, "successful auth should clear limiter state");
+
+    hidmi::AuthFailureLimiter log_limiter(10, std::chrono::seconds(60), std::chrono::seconds(30), std::chrono::seconds(10));
+    expect(log_limiter.record_failure("10.0.0.12", now).should_log, "first auth failure should log");
+    expect(!log_limiter.record_failure("10.0.0.12", now + std::chrono::seconds(1)).should_log, "auth failure logs should be rate limited");
+    expect(log_limiter.record_failure("10.0.0.12", now + std::chrono::seconds(11)).should_log, "auth failure log should reopen after interval");
+}
+
 void test_hid_reports() {
     fs::path root = fs::temp_directory_path() / ("hidmi-test-" + hidmi::random_b64url(8));
     fs::create_directories(root);
@@ -671,6 +692,7 @@ int main() {
         test_tcp_error_message_normalization();
         test_tcp_business_frames_require_active_session();
         test_interface_type_from_name();
+        test_auth_failure_limiter();
         test_hid_reports();
         test_hid_writer_allows_missing_absolute_mouse();
         test_hid_writer_reopens_absolute_mouse_after_degraded_start();

@@ -1966,6 +1966,12 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertEqual(oversized.connectionFailureKind, .protocolFailure)
     }
 
+    func testAuthRateLimitedErrorUsesSpecificUserFacingMessage() {
+        let error = HIDMIClientError.server(code: "AUTH_RATE_LIMITED", detail: String(localized: "error.auth_rate_limited"))
+        XCTAssertFalse(error.isAuthenticationFailure)
+        XCTAssertEqual(error.userFacingConnectionDescription, String(localized: "error.auth_rate_limited"))
+    }
+
     func testOfferCallbackMatchingIgnoresStaleDatagrams() throws {
         func packetData(body: (inout Hidmi_Kvm_Input_V1_UdpPacket) -> Void) throws -> Data {
             var packet = Hidmi_Kvm_Input_V1_UdpPacket()

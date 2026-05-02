@@ -110,6 +110,25 @@ void set_tcp_no_delay(int fd) {
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled));
 }
 
+std::string peer_ip_string(const sockaddr_storage& addr) {
+    char buffer[INET6_ADDRSTRLEN] = {};
+    if (addr.ss_family == AF_INET) {
+        const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(&addr);
+        if (::inet_ntop(AF_INET, &ipv4->sin_addr, buffer, sizeof(buffer))) {
+            return buffer;
+        }
+    }
+#ifdef AF_INET6
+    if (addr.ss_family == AF_INET6) {
+        const auto* ipv6 = reinterpret_cast<const sockaddr_in6*>(&addr);
+        if (::inet_ntop(AF_INET6, &ipv6->sin6_addr, buffer, sizeof(buffer))) {
+            return buffer;
+        }
+    }
+#endif
+    return "unknown";
+}
+
 bool constant_time_equal(const std::string& a, const std::vector<std::uint8_t>& b) {
     if (a.size() != b.size()) return false;
     unsigned char diff = 0;
@@ -582,6 +601,7 @@ bool Daemon::hid_ready_for_offer() {
 }
 
 void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len) {
+    const std::string source_ip = peer_ip_string(addr);
     auto send_callback = [&](bool accept, pb::OfferRejectReason reason, std::uint64_t session_id = 0) {
         pb::UdpPacket response;
         response.set_protocol_version(kProtoVersion);
@@ -653,6 +673,15 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
             return;
         }
     }
+    auto rate_decision = auth_failure_limiter_.check(source_ip, std::chrono::steady_clock::now());
+    if (rate_decision.rate_limited) {
+        led_auth_error("offer token authentication rate limited");
+        if (rate_decision.should_log) {
+            std::cerr << "WARNING: offer authentication rate limited from " << source_ip << "\n";
+        }
+        send_callback(false, pb::AUTH_RATE_LIMITED);
+        return;
+    }
     auto auth_payload = internal::offer_auth_payload(
         offer.server_id(),
         offer.boot_id(),
@@ -664,10 +693,17 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
         offer.client_unix_ms());
     auto expected_mac = internal::hmac_sha256(token_, auth_payload);
     if (!constant_time_equal(offer.auth_mac(), expected_mac)) {
-        led_auth_error("offer token authentication failed");
-        send_callback(false, pb::TOKEN_AUTH_FAILED);
+        auto decision = auth_failure_limiter_.record_failure(source_ip, std::chrono::steady_clock::now());
+        led_auth_error(decision.rate_limited ? "offer token authentication rate limited" : "offer token authentication failed");
+        if (decision.should_log) {
+            std::cerr << "WARNING: offer authentication failed from " << source_ip;
+            if (decision.rate_limited) std::cerr << " (rate limited)";
+            std::cerr << "\n";
+        }
+        send_callback(false, decision.rate_limited ? pb::AUTH_RATE_LIMITED : pb::TOKEN_AUTH_FAILED);
         return;
     }
+    auth_failure_limiter_.record_success(source_ip);
     if (!hid_ready_for_offer()) {
         send_callback(false, pb::HID_UNAVAILABLE);
         return;
