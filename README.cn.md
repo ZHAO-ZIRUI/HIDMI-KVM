@@ -9,7 +9,7 @@ HIDMI 是一个本地网络硬件级 KVM 项目。它让 Mac 显示目标电脑�
 ## 项目状态
 
 - 当前仓库包含 macOS 客户端、Linux 服务端、protobuf 协议定义和本地调试工具。
-- 当前以源码构建和本地部署为主，尚未提供面向最终用户的打包发布说明。
+- 当前以源码构建、本地 DMG 打包和本地部署为主。
 - 服务端需要安装硬件配置 profile；新设备通常需要新增或调整 profile。
 
 ## 支持设备
@@ -43,14 +43,25 @@ HIDMI 是一个本地网络硬件级 KVM 项目。它让 Mac 显示目标电脑�
 
 ### Linux 服务端
 
-在 Linux 设备上编译并安装服务端二进制文件，然后使用共享令牌安装受支持的硬件配置。
+使用根目录 CMake 快捷脚本构建服务端二进制文件，或在目标 Linux 设备上直接使用 Make。
 
 ```bash
+./build_server.sh
+# 或：
 make -C server
+```
+
+根目录的 `build_server.sh` 会把二进制文件写入 `build/server-cmake/hidmi`。使用 `./build_server.sh --test` 可以在构建后运行 C++ 测试。
+
+在 Linux 设备上安装服务端二进制文件，然后使用共享令牌安装受支持的硬件配置。
+
+```bash
 sudo make -C server install
 sudo hidmi install <profile> --token '<token>'
 sudo hidmi status
 ```
+
+安装目标使用 `server/Makefile`，并会在需要时自行构建对应产物。
 
 安装自定义硬件配置时，可以使用 `--config` 替代配置名称。
 
@@ -61,6 +72,14 @@ sudo hidmi install --config server/conf/<profile>.toml --token '<token>'
 ### macOS 客户端
 
 从源码构建 Release 应用。构建产物会写入 `build/macos/Release/HIDMI.app`。
+
+```bash
+./package_dmg.sh
+```
+
+根目录的 `package_dmg.sh` 会构建 Release 应用并生成 `build/dist/HIDMI.dmg`。使用 `./package_dmg.sh --skip-build` 可以直接打包已有 app bundle。
+
+只需要构建 app 时，可以直接使用 Xcode。
 
 ```bash
 xcodebuild build -project client/macos/HIDMI.xcodeproj -scheme HIDMI -configuration Release

@@ -12,7 +12,7 @@
 
 ## 开发前准备
 
-- macOS 客户端开发需要 macOS `26.0` 或更新版本，以及支持 Swift `6.0` 的 Xcode。
+- macOS 客户端开发需要 macOS `26.0` 或更新版本，以及支持 Swift `6.0` 的 Xcode。DMG 打包还会使用 macOS 的 `hdiutil` 工具。
 - Linux 服务端开发需要 CMake 或 Make、C++17 编译器、`protoc`、protobuf 开发库、用于安装验证的 systemd，以及用于硬件测试的 USB gadget 支持。
 - Protobuf 和 smoke 工具开发需要 Python 3，以及 `devtools/requirements.txt` 中列出的依赖。
 - 本地构建输出应放在 `build/` 下，并保持未跟踪状态。
@@ -23,6 +23,7 @@
 - `server/` 包含原生 Linux C++ 服务端、硬件配置、安装逻辑、USB gadget 设置、HID 写入器、运行时状态和 C++ 测试。
 - `proto/` 是协议源码的唯一事实来源。每个 protobuf message 或 enum 都位于独立文件中，并使用 `msg_` 或 `enum_` 文件名前缀。
 - `devtools/` 包含 protobuf 生成脚本、已生成的 Python protobuf 绑定、本地 protobuf smoke server 和 stress client。
+- `package_dmg.sh` 和 `build_server.sh` 是根目录快捷脚本，用于本地 DMG 打包和 CMake 服务端构建。
 
 ## 常见开发任务
 
@@ -37,17 +38,31 @@ xcodebuild build -project client/macos/HIDMI.xcodeproj -scheme HIDMI -configurat
 
 成功标准是 XCTest 无失败完成，并且 Release 应用存在于 `build/macos/Release/HIDMI.app`。
 
+需要本地 DMG 产物时，使用根目录打包脚本。
+
+```bash
+./package_dmg.sh
+```
+
+成功标准是 Release 应用完成构建，并生成 `build/dist/HIDMI.dmg`。使用 `./package_dmg.sh --skip-build` 可以打包已有 app bundle，更多输出路径和卷名选项见 `./package_dmg.sh --help`。
+
 ### 构建并测试 Linux 服务端
 
 本地验证优先使用 CMake，因为它会在构建目录中生成 C++ protobuf 绑定。
+
+```bash
+./build_server.sh --test
+```
+
+成功标准是服务端目标完成构建，并且 `hidmi_tests` 以状态码 `0` 退出。
+
+该脚本封装了下面的 CMake 流程，服务端二进制文件会写入 `build/server-cmake/hidmi`。
 
 ```bash
 cmake -S server -B build/server-cmake
 cmake --build build/server-cmake -j4
 ./build/server-cmake/hidmi_tests
 ```
-
-成功标准是服务端目标完成构建，并且 `hidmi_tests` 以状态码 `0` 退出。
 
 在目标 Linux 设备上，或验证安装行为时，可以使用 Make。
 

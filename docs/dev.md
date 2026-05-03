@@ -12,7 +12,7 @@ This guide is for external contributors who want to build, test, or change HIDMI
 
 ## Development Prerequisites
 
-- macOS client work requires macOS `26.0` or newer and Xcode with Swift `6.0` support.
+- macOS client work requires macOS `26.0` or newer and Xcode with Swift `6.0` support. DMG packaging also uses the macOS `hdiutil` tool.
 - Linux server work requires CMake or Make, a C++17 compiler, `protoc`, protobuf development libraries, systemd for install validation, and USB gadget support for hardware testing.
 - Protobuf and smoke-tool work requires Python 3 and the packages listed in `devtools/requirements.txt`.
 - Local build output belongs under `build/` and should remain untracked.
@@ -23,6 +23,7 @@ This guide is for external contributors who want to build, test, or change HIDMI
 - `server/` contains the native Linux C++ server, hardware profiles, install logic, USB gadget setup, HID writers, runtime status, and C++ tests.
 - `proto/` is the protocol source of truth. Each protobuf message or enum lives in its own file with a `msg_` or `enum_` filename prefix.
 - `devtools/` contains protobuf generation, generated Python protobuf bindings, the local protobuf smoke server, and the stress client.
+- `package_dmg.sh` and `build_server.sh` are root-level shortcuts for local DMG packaging and CMake server builds.
 
 ## Common Development Tasks
 
@@ -37,17 +38,31 @@ xcodebuild build -project client/macos/HIDMI.xcodeproj -scheme HIDMI -configurat
 
 Success means XCTest completes without failures and the Release app exists at `build/macos/Release/HIDMI.app`.
 
+Use the root packaging script when you need a local DMG artifact.
+
+```bash
+./package_dmg.sh
+```
+
+Success means the Release app builds and `build/dist/HIDMI.dmg` is created. Use `./package_dmg.sh --skip-build` to package an existing app bundle, or `./package_dmg.sh --help` for output and volume-name options.
+
 ### Build And Test The Linux Server
 
 Use CMake for local verification because it generates C++ protobuf bindings inside the build directory.
+
+```bash
+./build_server.sh --test
+```
+
+Success means the server target builds and `hidmi_tests` exits with status `0`.
+
+The script wraps the equivalent CMake flow below and writes the server binary to `build/server-cmake/hidmi`.
 
 ```bash
 cmake -S server -B build/server-cmake
 cmake --build build/server-cmake -j4
 ./build/server-cmake/hidmi_tests
 ```
-
-Success means the server target builds and `hidmi_tests` exits with status `0`.
 
 Use Make on a target Linux device or when validating install behavior.
 

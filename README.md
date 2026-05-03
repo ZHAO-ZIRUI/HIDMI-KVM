@@ -9,7 +9,7 @@ The target computer does not need agent software. If it can output HDMI and reco
 ## Project Status
 
 - The repository currently includes the macOS client, Linux server, protobuf protocol definitions, and local debugging tools.
-- The project currently focuses on source builds and local deployment; end-user packaged release instructions are not provided yet.
+- The project currently focuses on source builds, local DMG packaging, and local deployment.
 - The server needs an installed hardware profile; new devices usually require adding or adjusting a profile.
 
 ## Supported Devices
@@ -43,14 +43,25 @@ The target computer does not need agent software. If it can output HDMI and reco
 
 ### Linux Server
 
-Build and install the server binary on the Linux device, then install a supported hardware profile with a shared token.
+Build the server binary with the root CMake helper, or use Make directly on a target Linux device.
 
 ```bash
+./build_server.sh
+# or:
 make -C server
+```
+
+The root `build_server.sh` script writes the binary to `build/server-cmake/hidmi`. Use `./build_server.sh --test` to run the C++ test binary after building.
+
+Install the server binary on the Linux device, then install a supported hardware profile with a shared token.
+
+```bash
 sudo make -C server install
 sudo hidmi install <profile> --token '<token>'
 sudo hidmi status
 ```
+
+The install target uses `server/Makefile` and builds its own output if needed.
 
 Use `--config` instead of a profile name when installing a custom hardware configuration.
 
@@ -61,6 +72,14 @@ sudo hidmi install --config server/conf/<profile>.toml --token '<token>'
 ### macOS Client
 
 Build the Release app from source. The build output is written to `build/macos/Release/HIDMI.app`.
+
+```bash
+./package_dmg.sh
+```
+
+The root `package_dmg.sh` script builds the Release app and creates `build/dist/HIDMI.dmg`. Use `./package_dmg.sh --skip-build` to package an existing app bundle.
+
+For an app-only build, use Xcode directly.
 
 ```bash
 xcodebuild build -project client/macos/HIDMI.xcodeproj -scheme HIDMI -configuration Release
