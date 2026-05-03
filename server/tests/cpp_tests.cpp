@@ -3,7 +3,12 @@
 #include "msg_tcp_frame.pb.h"
 #include "msg_udp_packet.pb.h"
 
+#include <arpa/inet.h>
 #include <atomic>
+#include <cerrno>
+#include <cstring>
+#include <exception>
+#include <netinet/in.h>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -13,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
 
@@ -44,6 +50,31 @@ void write_file(const fs::path& path, const std::string& text = "") {
     fs::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out << text;
+}
+
+int reserve_udp_port() {
+    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) throw std::runtime_error(std::strerror(errno));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        int err = errno;
+        ::close(fd);
+        errno = err;
+        throw std::runtime_error(std::strerror(errno));
+    }
+    socklen_t addr_len = sizeof(addr);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &addr_len) != 0) {
+        int err = errno;
+        ::close(fd);
+        errno = err;
+        throw std::runtime_error(std::strerror(errno));
+    }
+    int port = ntohs(addr.sin_port);
+    ::close(fd);
+    return port;
 }
 
 std::string config_text(
@@ -260,6 +291,92 @@ void test_protobuf_udp_discover_and_offer_helpers() {
     expect(hidmi::internal::valid_offer_tcp_ports(hidmi::kMinTcpPort, hidmi::kMinTcpPort + 1, hidmi::kMinTcpPort + 2), "valid Offer TCP ports rejected");
     expect(!hidmi::internal::valid_offer_tcp_ports(hidmi::kMinTcpPort, hidmi::kMinTcpPort, hidmi::kMinTcpPort + 1), "duplicate Offer TCP ports accepted");
     expect(!hidmi::internal::valid_offer_tcp_ports(9999, hidmi::kMinTcpPort, hidmi::kMinTcpPort + 1), "out-of-range Offer TCP port accepted");
+}
+
+void test_udp_offer_callback_loopback() {
+    auto cfg = hidmi::ServerConfig{};
+    cfg.name = "udp-callback-test";
+    cfg.display_name = "UDP Callback Test";
+    cfg.udp_port = reserve_udp_port();
+    cfg.discovery_only = true;
+    cfg.offer_ttl_sec = 1;
+    cfg.tcp_timeout_sec = 1.0;
+    cfg.leds.enabled = false;
+
+    hidmi::Daemon daemon(cfg, "test-token");
+    std::exception_ptr daemon_error;
+    std::thread daemon_thread([&] {
+        try {
+            daemon.serve_forever();
+        } catch (...) {
+            daemon_error = std::current_exception();
+        }
+    });
+
+    int client_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (client_fd < 0) {
+        daemon.stop();
+        daemon_thread.join();
+        throw std::runtime_error(std::strerror(errno));
+    }
+    timeval timeout{};
+    timeout.tv_usec = 50000;
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    auto stop_daemon = [&] {
+        ::close(client_fd);
+        daemon.stop();
+        if (daemon_thread.joinable()) daemon_thread.join();
+        if (daemon_error) std::rethrow_exception(daemon_error);
+    };
+
+    try {
+        hidpb::UdpPacket offer;
+        offer.set_protocol_version(hidmi::kProtoVersion + 1);
+        offer.mutable_offer();
+        std::string payload = offer.SerializeAsString();
+
+        sockaddr_in destination{};
+        destination.sin_family = AF_INET;
+        destination.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        destination.sin_port = htons(static_cast<std::uint16_t>(cfg.udp_port));
+
+        hidpb::UdpPacket callback;
+        bool got_callback = false;
+        for (int attempt = 0; attempt < 80 && !got_callback; ++attempt) {
+            ssize_t sent = ::sendto(
+                client_fd,
+                payload.data(),
+                payload.size(),
+                0,
+                reinterpret_cast<sockaddr*>(&destination),
+                sizeof(destination));
+            expect(sent == static_cast<ssize_t>(payload.size()), "failed to send loopback Offer");
+
+            std::array<char, 2048> buffer{};
+            sockaddr_storage peer{};
+            socklen_t peer_len = sizeof(peer);
+            ssize_t got = ::recvfrom(client_fd, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+            if (got < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                    continue;
+                }
+                throw std::runtime_error(std::strerror(errno));
+            }
+            got_callback = callback.ParseFromArray(buffer.data(), static_cast<int>(got))
+                && callback.body_case() == hidpb::UdpPacket::kOfferCallback;
+        }
+
+        expect(got_callback, "loopback Offer should receive callback");
+        expect(!callback.offer_callback().accept(), "protocol mismatch Offer callback should reject");
+        expect(callback.offer_callback().reject_reason() == hidpb::PROTOCOL_VERSION_MISMATCH, "protocol mismatch callback reason mismatch");
+    } catch (...) {
+        stop_daemon();
+        throw;
+    }
+
+    stop_daemon();
 }
 
 void test_protobuf_offer_hmac_and_absolute_scaling() {
@@ -808,6 +925,7 @@ int main() {
         test_status_json_parsing_helpers();
         test_protobuf_tcp_frame_length_prefix();
         test_protobuf_udp_discover_and_offer_helpers();
+        test_udp_offer_callback_loopback();
         test_protobuf_offer_hmac_and_absolute_scaling();
         test_tcp_error_message_normalization();
         test_tcp_business_frames_require_active_session();

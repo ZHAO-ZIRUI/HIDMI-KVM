@@ -326,6 +326,59 @@ void send_discover_datagram(int fd, const std::string& payload, const BroadcastI
     );
 }
 
+void enable_udp_ipv4_pktinfo(int fd) {
+#if defined(__linux__) && defined(IP_PKTINFO)
+    int enabled = 1;
+    ::setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &enabled, sizeof(enabled));
+#else
+    (void)fd;
+#endif
+}
+
+bool send_udp_datagram_from_received_interface(
+    int fd,
+    const std::string& payload,
+    const sockaddr_storage& addr,
+    socklen_t addr_len,
+    unsigned int if_index,
+    std::uint32_t local_ipv4,
+    bool has_pktinfo) {
+#if defined(__linux__) && defined(IP_PKTINFO)
+    if (has_pktinfo && addr.ss_family == AF_INET && (if_index != 0 || local_ipv4 != 0)) {
+        sockaddr_storage destination = addr;
+        iovec iov{};
+        iov.iov_base = const_cast<char*>(payload.data());
+        iov.iov_len = payload.size();
+
+        char control[CMSG_SPACE(sizeof(in_pktinfo))]{};
+        msghdr message{};
+        message.msg_name = &destination;
+        message.msg_namelen = addr_len;
+        message.msg_iov = &iov;
+        message.msg_iovlen = 1;
+        message.msg_control = control;
+        message.msg_controllen = sizeof(control);
+
+        cmsghdr* cmsg = CMSG_FIRSTHDR(&message);
+        cmsg->cmsg_level = IPPROTO_IP;
+        cmsg->cmsg_type = IP_PKTINFO;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(in_pktinfo));
+        auto* info = reinterpret_cast<in_pktinfo*>(CMSG_DATA(cmsg));
+        info->ipi_ifindex = static_cast<int>(if_index);
+        info->ipi_spec_dst.s_addr = local_ipv4;
+
+        if (::sendmsg(fd, &message, 0) >= 0) {
+            return true;
+        }
+    }
+#else
+    (void)if_index;
+    (void)local_ipv4;
+    (void)has_pktinfo;
+#endif
+    return ::sendto(fd, payload.data(), payload.size(), 0, reinterpret_cast<const sockaddr*>(&addr), addr_len) >= 0;
+}
+
 std::uint64_t buttons_mask_to_int(std::uint64_t mask) {
     return mask & 0xff;
 }
@@ -397,6 +450,7 @@ int Daemon::serve_forever() {
     int one = 1;
     setsockopt(udp_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     setsockopt(udp_fd_, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
+    enable_udp_ipv4_pktinfo(udp_fd_);
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -434,15 +488,44 @@ int Daemon::serve_forever() {
             }
 
             std::array<char, 65535> buffer{};
-            sockaddr_storage peer{};
-            socklen_t peer_len = sizeof(peer);
-            ssize_t got = ::recvfrom(udp_fd_, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+            UdpPeerContext peer{};
+            peer.addr_len = sizeof(peer.addr);
+#if defined(__linux__) && defined(IP_PKTINFO)
+            iovec iov{};
+            iov.iov_base = buffer.data();
+            iov.iov_len = buffer.size();
+
+            char control[CMSG_SPACE(sizeof(in_pktinfo))]{};
+            msghdr message{};
+            message.msg_name = &peer.addr;
+            message.msg_namelen = sizeof(peer.addr);
+            message.msg_iov = &iov;
+            message.msg_iovlen = 1;
+            message.msg_control = control;
+            message.msg_controllen = sizeof(control);
+
+            ssize_t got = ::recvmsg(udp_fd_, &message, 0);
+            peer.addr_len = message.msg_namelen;
+            if (got >= 0) {
+                for (cmsghdr* cmsg = CMSG_FIRSTHDR(&message); cmsg; cmsg = CMSG_NXTHDR(&message, cmsg)) {
+                    if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
+                        auto* info = reinterpret_cast<in_pktinfo*>(CMSG_DATA(cmsg));
+                        peer.if_index = info->ipi_ifindex > 0 ? static_cast<unsigned int>(info->ipi_ifindex) : 0;
+                        peer.local_ipv4 = info->ipi_spec_dst.s_addr != 0 ? info->ipi_spec_dst.s_addr : info->ipi_addr.s_addr;
+                        peer.has_pktinfo = peer.if_index != 0 || peer.local_ipv4 != 0;
+                        break;
+                    }
+                }
+            }
+#else
+            ssize_t got = ::recvfrom(udp_fd_, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr*>(&peer.addr), &peer.addr_len);
+#endif
             if (got < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
                 if (stop_requested_ || signal_stop_requested()) break;
                 throw std::runtime_error(std::strerror(errno));
             }
-            handle_udp_datagram(std::string(buffer.data(), static_cast<std::size_t>(got)), peer, peer_len);
+            handle_udp_datagram(std::string(buffer.data(), static_cast<std::size_t>(got)), peer);
         }
     } catch (...) {
         stop();
@@ -496,7 +579,7 @@ void Daemon::stop() {
     publish_runtime_status(false);
 }
 
-void Daemon::handle_udp_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len) {
+void Daemon::handle_udp_datagram(const std::string& data, const UdpPeerContext& peer) {
     pb::UdpPacket packet;
     if (!packet.ParseFromString(data)) {
         led_protocol_error("bad UDP protobuf");
@@ -508,7 +591,7 @@ void Daemon::handle_udp_datagram(const std::string& data, const sockaddr_storage
     if (packet.body_case() != pb::UdpPacket::kOffer) {
         return;
     }
-    handle_offer_datagram(data, addr, addr_len);
+    handle_offer_datagram(data, peer);
 }
 
 void Daemon::broadcast_discover() {
@@ -603,8 +686,8 @@ bool Daemon::hid_ready_for_offer() {
     return hid_ && hid_->mandatory_available();
 }
 
-void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len) {
-    const std::string source_ip = peer_ip_string(addr);
+void Daemon::handle_offer_datagram(const std::string& data, const UdpPeerContext& peer) {
+    const std::string source_ip = peer_ip_string(peer.addr);
     auto send_callback = [&](bool accept, pb::OfferRejectReason reason, std::uint64_t session_id = 0) {
         pb::UdpPacket response;
         response.set_protocol_version(kProtoVersion);
@@ -617,7 +700,14 @@ void Daemon::handle_offer_datagram(const std::string& data, const sockaddr_stora
         callback->set_connect_deadline_ms(static_cast<std::uint32_t>(std::max(1000, config_.offer_ttl_sec * 1000)));
         std::string payload;
         if (response.SerializeToString(&payload)) {
-            ::sendto(udp_fd_, payload.data(), payload.size(), 0, reinterpret_cast<const sockaddr*>(&addr), addr_len);
+            send_udp_datagram_from_received_interface(
+                udp_fd_,
+                payload,
+                peer.addr,
+                peer.addr_len,
+                peer.if_index,
+                peer.local_ipv4,
+                peer.has_pktinfo);
         }
     };
 

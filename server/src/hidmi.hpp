@@ -290,6 +290,13 @@ private:
         std::thread thread;
         std::shared_ptr<std::atomic_bool> done;
     };
+    struct UdpPeerContext {
+        sockaddr_storage addr{};
+        socklen_t addr_len = 0;
+        unsigned int if_index = 0;
+        std::uint32_t local_ipv4 = 0;
+        bool has_pktinfo = false;
+    };
     struct PressedInputState {
         int keyboard_modifiers = 0;
         std::vector<int> keyboard_keys;
@@ -347,8 +354,8 @@ private:
     AuthFailureLimiter auth_failure_limiter_;
     UsbReenumerationGrace usb_grace_;
 
-    void handle_udp_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len);
-    void handle_offer_datagram(const std::string& data, const sockaddr_storage& addr, socklen_t addr_len);
+    void handle_udp_datagram(const std::string& data, const UdpPeerContext& peer);
+    void handle_offer_datagram(const std::string& data, const UdpPeerContext& peer);
     void broadcast_discover();
     ChannelEndpoint& endpoint_for(PendingSession& session, int channel_id);
     bool all_channels_ready(const PendingSession& session) const;
