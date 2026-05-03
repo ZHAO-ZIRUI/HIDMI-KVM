@@ -406,6 +406,9 @@ final class HIDMIController: ObservableObject {
         source: HIDMIDiscoveryRefreshSource = .manual,
         completion: (@MainActor @Sendable () -> Void)? = nil
     ) {
+        if source == .manual {
+            endpointConnectionFailuresByDeviceID.removeAll()
+        }
         if let discoveryRefreshTask {
             guard source == .manual && discoveryRefreshSource != .manual else { return }
             discoveryRefreshTask.cancel()

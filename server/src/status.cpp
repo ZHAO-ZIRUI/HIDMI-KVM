@@ -322,7 +322,7 @@ int print_status(const InstallPaths& paths, std::ostream& out) {
     bool proto_mismatch = runtime_ok && runtime->client_proto_mismatch;
     bool client_stale = false;
     if (runtime_ok && runtime->client_connected && runtime->last_client_request_at_ms > 0) {
-        auto stale_after_ms = static_cast<std::int64_t>((cfg ? cfg->tcp_timeout_sec : 15.0) * 1000.0);
+        auto stale_after_ms = static_cast<std::int64_t>((cfg ? cfg->tcp_timeout_sec : 6.0) * 1000.0);
         client_stale = epoch_ms() - runtime->last_client_request_at_ms > stale_after_ms;
     }
     StatusCell client_connection;

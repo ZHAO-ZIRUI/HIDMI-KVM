@@ -2,8 +2,8 @@
 name = "Orange Pi Zero 3 KVM"
 token_file = "/etc/hidmi/token"
 discovery_udp_port = 55536
-timeout_offer_ttl_sec = 30
-timeout_tcp_sec = 15.0
+timeout_offer_ttl_sec = 5
+timeout_tcp_sec = 6.0
 
 [board]
 hid_keyboard_path = "/dev/hidg0"

@@ -47,8 +47,8 @@ struct ServerConfig {
     std::string token_file = "/etc/hidmi/token";
     int udp_port = kDiscoveryPort;
     bool discovery_only = false;
-    int offer_ttl_sec = 30;
-    double tcp_timeout_sec = 15.0;
+    int offer_ttl_sec = 5;
+    double tcp_timeout_sec = 6.0;
     HidConfig hid;
     LedConfig leds;
 };

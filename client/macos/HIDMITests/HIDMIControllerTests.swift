@@ -799,6 +799,64 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertEqual(secondAttempts, [wlan.discoveryID, ethernet.discoveryID])
     }
 
+    func testManualKVMRefreshClearsEndpointFailureState() async throws {
+        let device = makeDevice(
+            id: "kvm-a",
+            host: "10.0.0.33",
+            name: "Orange Pi Zero 3 KVM",
+            transport: .wlan,
+            requiresAuth: false
+        )
+        let worker = FakeHIDMIWorker()
+        await worker.setConnectError(HIDMIClientError.posix("connect", EHOSTUNREACH), for: device.discoveryID)
+        let hidmi = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt(),
+            warningPresenter: FakeConnectionWarningPresenter()
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+
+        hidmi.mergeDiscoveredDevices([device], seenAt: Date())
+        model.connectHIDMI(device.discoveryID)
+        await waitUntil {
+            if case .failed = hidmi.status {
+                return true
+            }
+            return false
+        }
+        let failedItem = try XCTUnwrap(model.makeStatusSelectorSnapshot().kvmDevices.first)
+        guard case .failed = failedItem.connectionState else {
+            return XCTFail("Expected endpoint failure before refresh")
+        }
+
+        await worker.setDiscoveryResults([[device]])
+        var backgroundRefreshCompleted = false
+        hidmi.refreshDiscoveredDevices(source: .background) {
+            backgroundRefreshCompleted = true
+        }
+        await waitUntil { backgroundRefreshCompleted }
+        let backgroundItem = try XCTUnwrap(model.makeStatusSelectorSnapshot().kvmDevices.first)
+        guard case .failed = backgroundItem.connectionState else {
+            return XCTFail("Background discovery should not clear user-visible endpoint failure")
+        }
+
+        await worker.setDiscoveryResults([[device]])
+        var manualRefreshCompleted = false
+        hidmi.refreshDiscoveredDevices(source: .manual) {
+            manualRefreshCompleted = true
+        }
+        await waitUntil { manualRefreshCompleted }
+        let refreshedSnapshot = model.makeStatusSelectorSnapshot()
+        let refreshedItem = try XCTUnwrap(refreshedSnapshot.kvmDevices.first)
+        XCTAssertEqual(refreshedItem.connectionState, .available)
+        XCTAssertTrue(refreshedSnapshot.kvmEndpointErrors.isEmpty)
+    }
+
     func testKVMSelectorPreservesOpenRowsWhileMergingEndpointState() async {
         let first = makeDevice(id: "kvm-a", host: "10.0.0.46", name: "First KVM", requiresAuth: false)
         let second = makeDevice(id: "kvm-b", host: "10.0.0.47", name: "Second KVM", requiresAuth: false)
