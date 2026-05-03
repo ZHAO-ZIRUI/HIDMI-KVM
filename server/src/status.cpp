@@ -56,6 +56,9 @@ struct RuntimeStatusSnapshot {
     std::string last_disconnect_reason;
     std::string last_hid_error;
     std::string last_input_watchdog_release_at;
+    std::string last_gadget_reset_at;
+    std::string last_gadget_reset_reason;
+    int gadget_reset_count = 0;
     int accept_worker_count = 0;
     std::int64_t updated_at_ms = 0;
 };
@@ -152,6 +155,9 @@ std::optional<RuntimeStatusSnapshot> read_runtime_status(const fs::path& path, s
         snapshot.last_disconnect_reason = message_string(object, "last_disconnect_reason");
         snapshot.last_hid_error = message_string(object, "last_hid_error");
         snapshot.last_input_watchdog_release_at = message_string(object, "last_input_watchdog_release_at");
+        snapshot.last_gadget_reset_at = message_string(object, "last_gadget_reset_at");
+        snapshot.last_gadget_reset_reason = message_string(object, "last_gadget_reset_reason");
+        snapshot.gadget_reset_count = static_cast<int>(message_int_default(object, "gadget_reset_count", 0));
         snapshot.accept_worker_count = static_cast<int>(message_int_default(object, "accept_worker_count", 0));
         snapshot.updated_at_ms = message_int_default(object, "updated_at_ms", 0);
         return snapshot;
@@ -340,6 +346,13 @@ int print_status(const InstallPaths& paths, std::ostream& out) {
     StatusCell last_connected = cyan((runtime && !runtime->last_client_connected_at.empty()) ? runtime->last_client_connected_at : "never");
     StatusCell last_disconnect = cyan((runtime && !runtime->last_disconnect_reason.empty()) ? runtime->last_disconnect_reason : "none");
     StatusCell input_watchdog = cyan((runtime && !runtime->last_input_watchdog_release_at.empty()) ? runtime->last_input_watchdog_release_at : "never");
+    StatusCell gadget_resets = runtime_ok ? cyan(std::to_string(runtime->gadget_reset_count)) : red("ERR");
+    std::string reset_detail = "never";
+    if (runtime && !runtime->last_gadget_reset_at.empty()) {
+        reset_detail = runtime->last_gadget_reset_at;
+        if (!runtime->last_gadget_reset_reason.empty()) reset_detail += " - " + runtime->last_gadget_reset_reason;
+    }
+    StatusCell last_gadget_reset = cyan(reset_detail);
     StatusCell accept_workers = runtime_ok ? cyan(std::to_string(runtime->accept_worker_count)) : red("ERR");
 
     bool infra_ok = config_ok && services_ok && hid_devices_ok && hid_available_ok && udp_ok && tcp_accept_ok && (!runtime_ok || runtime->hid_runtime_available);
@@ -359,6 +372,8 @@ int print_status(const InstallPaths& paths, std::ostream& out) {
     rows.push_back({"HID Available", hid_available});
     rows.push_back({"UDC State Path", udc_state_path});
     rows.push_back({"HID Runtime", hid_runtime});
+    rows.push_back({"Gadget Reset Count", gadget_resets});
+    rows.push_back({"Last Gadget Reset", last_gadget_reset});
     rows.push_back({"", {}, true});
     rows.push_back({"UDP Discovery", udp_discovery});
     rows.push_back({"TCP Accept", tcp_accept});

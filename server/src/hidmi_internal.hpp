@@ -116,6 +116,9 @@ void write_runtime_status_file(
     const std::string& last_disconnect_reason,
     const std::string& last_hid_error,
     const std::string& last_input_watchdog_release_at,
+    const std::string& last_gadget_reset_at,
+    const std::string& last_gadget_reset_reason,
+    int gadget_reset_count,
     int accept_worker_count);
 void write_fd_all(int fd, const std::vector<std::uint8_t>& bytes, int timeout_ms = 250);
 int run_system(const std::string& command);

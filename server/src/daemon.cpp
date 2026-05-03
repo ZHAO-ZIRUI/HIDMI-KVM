@@ -36,6 +36,9 @@ struct Daemon::PendingSession {
 namespace {
 
 constexpr auto kHidRetryInterval = std::chrono::seconds(3);
+constexpr auto kHidFailureWindow = std::chrono::seconds(30);
+constexpr auto kGadgetResetCooldown = std::chrono::seconds(30);
+constexpr int kHidFailureResetThreshold = 2;
 constexpr std::uint32_t kMaxTcpFrameBytes = 64 * 1024;
 
 struct SocketReadTimeout : std::runtime_error {
@@ -442,7 +445,9 @@ int Daemon::serve_forever() {
         led_->start(true);
     }
     if (!config_.discovery_only) {
-        ensure_hid_available(true);
+        if (!ensure_hid_available(true)) {
+            perform_gadget_soft_reset("startup HID open failed", true);
+        }
     }
 
     udp_fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
@@ -1326,6 +1331,9 @@ void Daemon::update_usb_reenumeration_grace() {
 
     if (!usb_configured_for_hid()) {
         if (grace_expired) {
+            if (try_gadget_reset_for_grace(session, "USB is not configured; attempting gadget reset before disconnect")) {
+                return;
+            }
             cleanup_session(session, "usb not configured grace expired", false);
             return;
         }
@@ -1342,48 +1350,15 @@ void Daemon::update_usb_reenumeration_grace() {
 
     if (!ensure_hid_available(true)) {
         if (grace_expired) {
-            cleanup_session(session, "usb not configured grace expired", false);
+            if (try_gadget_reset_for_grace(session, "HID recovery grace expired; attempting gadget reset before disconnect")) {
+                return;
+            }
+            cleanup_session(session, "HID recovery grace expired", false);
         }
         return;
     }
 
-    bool release_needed = false;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (usb_grace_.session_id() == session->session_id) {
-            release_needed = usb_grace_.release_needed();
-        }
-    }
-
-    if (release_needed) {
-        try {
-            std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-            if (hid_) hid_->release_all();
-        } catch (const std::exception& exc) {
-            std::cerr << "WARNING: USB re-enumeration release_all best-effort failed for session "
-                      << session->session_id << ": " << exc.what() << "\n";
-        } catch (...) {
-            std::cerr << "WARNING: USB re-enumeration release_all best-effort failed for session "
-                      << session->session_id << "\n";
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (usb_grace_.session_id() == session->session_id) usb_grace_.clear();
-        pressed_input_.clear();
-        last_input_activity_ = std::chrono::steady_clock::now();
-    }
-    set_runtime_hid_available(true);
-    {
-        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-        if (hid_) {
-            led_hid_success(*hid_);
-        } else {
-            led_hid_state(HidLedState::Ready);
-        }
-    }
-    std::cerr << "OK: USB re-enumeration grace recovered for session " << session->session_id << "\n";
+    finish_usb_reenumeration_grace(session, "USB re-enumeration grace recovered");
 }
 
 bool Daemon::usb_grace_blocks_hid_retry() {
@@ -1392,8 +1367,10 @@ bool Daemon::usb_grace_blocks_hid_retry() {
     return !active_session_id_.empty() && usb_grace_.active_for(active_session_id_, now);
 }
 
-bool Daemon::begin_usb_reenumeration_grace(std::shared_ptr<PendingSession> session, const std::string& reason, bool dropped_input) {
-    if (!session || usb_configured_for_hid()) return false;
+bool Daemon::begin_usb_reenumeration_grace(std::shared_ptr<PendingSession> session, const std::string& reason, bool dropped_input, bool allow_when_configured) {
+    if (!session) return false;
+    bool usb_configured = usb_configured_for_hid();
+    if (usb_configured && !allow_when_configured) return false;
 
     auto now = std::chrono::steady_clock::now();
     bool started = false;
@@ -1418,9 +1395,9 @@ bool Daemon::begin_usb_reenumeration_grace(std::shared_ptr<PendingSession> sessi
         next_hid_retry_at_ = {};
     }
     set_runtime_hid_available(false);
-    led_hid_state(HidLedState::UsbNotConfigured, reason);
+    led_hid_state(usb_configured ? HidLedState::WriteFailed : HidLedState::UsbNotConfigured, reason);
     if (started) {
-        std::cerr << "WARNING: USB re-enumeration grace started for session "
+        std::cerr << "WARNING: HID recovery grace started for session "
                   << session->session_id << ": " << reason << "\n";
     }
     return true;
@@ -1451,11 +1428,96 @@ bool Daemon::handle_hid_write_failure(
     const std::exception& exc,
     bool dropped_input) {
     std::string reason = context + ": " + exc.what();
-    if (begin_usb_reenumeration_grace(session, reason, dropped_input)) {
+    bool should_reset = should_reset_after_hid_failure(reason, false);
+    if (begin_usb_reenumeration_grace(session, reason, dropped_input, true)) {
+        if (should_reset) {
+            try_gadget_reset_for_grace(session, reason);
+        }
         return true;
     }
     mark_hid_failed(reason);
+    if (should_reset) {
+        perform_gadget_soft_reset(reason);
+    }
     return false;
+}
+
+bool Daemon::finish_usb_reenumeration_grace(std::shared_ptr<PendingSession> session, const std::string& message) {
+    if (!session) return false;
+    bool release_needed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (usb_grace_.session_id() != session->session_id) return false;
+        release_needed = usb_grace_.release_needed();
+    }
+
+    if (release_needed) {
+        try {
+            std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+            if (hid_) hid_->release_all();
+        } catch (const std::exception& exc) {
+            std::cerr << "WARNING: HID recovery release_all best-effort failed for session "
+                      << session->session_id << ": " << exc.what() << "\n";
+        } catch (...) {
+            std::cerr << "WARNING: HID recovery release_all best-effort failed for session "
+                      << session->session_id << "\n";
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (usb_grace_.session_id() == session->session_id) usb_grace_.clear();
+        pressed_input_.clear();
+        last_input_activity_ = std::chrono::steady_clock::now();
+    }
+    set_runtime_hid_available(true);
+    {
+        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+        if (hid_) {
+            led_hid_success(*hid_);
+        } else {
+            led_hid_state(HidLedState::Ready);
+        }
+    }
+    std::cerr << "OK: " << message << " for session " << session->session_id << "\n";
+    return true;
+}
+
+bool Daemon::try_gadget_reset_for_grace(std::shared_ptr<PendingSession> session, const std::string& reason) {
+    if (!session) return false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (usb_grace_.session_id() != session->session_id || usb_grace_.gadget_reset_attempted()) return false;
+        usb_grace_.note_gadget_reset_attempted();
+    }
+    if (!perform_gadget_soft_reset(reason)) return false;
+    if (!ensure_hid_available(true)) return false;
+    return finish_usb_reenumeration_grace(session, "HID recovered after gadget reset");
+}
+
+bool Daemon::try_open_hid_writer(std::string* error_out) {
+    auto candidate = std::make_unique<HidWriter>(config_.hid.keyboard_path, config_.hid.mouse_path, config_.hid.absolute_mouse_path);
+    try {
+        candidate->open();
+    } catch (const std::exception& exc) {
+        if (error_out) *error_out = exc.what();
+        return false;
+    }
+
+    bool absolute_degraded = candidate->absolute_mouse_degraded();
+    std::string absolute_error = candidate->last_absolute_error();
+    {
+        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+        hid_ = std::move(candidate);
+        next_hid_retry_at_ = {};
+    }
+    set_runtime_hid_available(true);
+    led_hid_state(
+        absolute_degraded ? HidLedState::AbsoluteDegraded : HidLedState::Ready,
+        absolute_degraded ? absolute_error : ""
+    );
+    std::cerr << "OK: HID devices opened\n";
+    return true;
 }
 
 bool Daemon::ensure_hid_available(bool force) {
@@ -1483,35 +1545,22 @@ bool Daemon::ensure_hid_available(bool force) {
         next_hid_retry_at_ = now + kHidRetryInterval;
     }
 
-    auto candidate = std::make_unique<HidWriter>(config_.hid.keyboard_path, config_.hid.mouse_path, config_.hid.absolute_mouse_path);
-    try {
-        candidate->open();
-    } catch (const std::exception& exc) {
-        {
-            std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-            hid_.reset();
-            next_hid_retry_at_ = std::chrono::steady_clock::now() + kHidRetryInterval;
-        }
-        set_runtime_hid_available(false);
-        led_hid_state(HidLedState::NodeUnavailable, std::string("HID open failed: ") + exc.what());
-        std::cerr << "WARNING: HID open failed; retrying in 3s: " << exc.what() << "\n";
-        return false;
-    }
+    std::string error;
+    if (try_open_hid_writer(&error)) return true;
 
-    bool absolute_degraded = candidate->absolute_mouse_degraded();
-    std::string absolute_error = candidate->last_absolute_error();
     {
         std::lock_guard<std::mutex> hid_lock(hid_mutex_);
-        hid_ = std::move(candidate);
-        next_hid_retry_at_ = {};
+        hid_.reset();
+        next_hid_retry_at_ = std::chrono::steady_clock::now() + kHidRetryInterval;
     }
-    set_runtime_hid_available(true);
-    led_hid_state(
-        absolute_degraded ? HidLedState::AbsoluteDegraded : HidLedState::Ready,
-        absolute_degraded ? absolute_error : ""
-    );
-    std::cerr << "OK: HID devices opened\n";
-    return true;
+    set_runtime_hid_available(false);
+    set_runtime_hid_error(std::string("HID open failed: ") + error);
+    led_hid_state(HidLedState::NodeUnavailable, std::string("HID open failed: ") + error);
+    std::cerr << "WARNING: HID open failed; retrying in 3s: " << error << "\n";
+    if (should_reset_after_hid_failure("HID open failed: " + error, force)) {
+        return perform_gadget_soft_reset("HID open failed: " + error, force);
+    }
+    return false;
 }
 
 void Daemon::mark_hid_failed(const std::string& reason) {
@@ -1524,6 +1573,94 @@ void Daemon::mark_hid_failed(const std::string& reason) {
         hid_.reset();
     }
     next_hid_retry_at_ = std::chrono::steady_clock::now() + kHidRetryInterval;
+}
+
+bool Daemon::should_reset_after_hid_failure(const std::string& reason, bool force) {
+    if (config_.discovery_only) return false;
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(runtime_mutex_);
+    while (!recent_hid_failures_.empty() && now - recent_hid_failures_.front() > kHidFailureWindow) {
+        recent_hid_failures_.pop_front();
+    }
+    recent_hid_failures_.push_back(now);
+    if (!force && static_cast<int>(recent_hid_failures_.size()) < kHidFailureResetThreshold) {
+        return false;
+    }
+    if (!force
+        && last_gadget_reset_steady_.time_since_epoch().count() != 0
+        && now - last_gadget_reset_steady_ < kGadgetResetCooldown) {
+        std::cerr << "WARNING: suppressing gadget reset during cooldown after HID failure: " << reason << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool Daemon::perform_gadget_soft_reset(const std::string& reason, bool ignore_cooldown) {
+    if (config_.discovery_only) return false;
+    auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(runtime_mutex_);
+        if (!ignore_cooldown
+            && last_gadget_reset_steady_.time_since_epoch().count() != 0
+            && now - last_gadget_reset_steady_ < kGadgetResetCooldown) {
+            return false;
+        }
+    }
+
+    std::cerr << "WARNING: performing HID gadget soft reset: " << reason << "\n";
+    try {
+        release_all(config_);
+    } catch (const std::exception& exc) {
+        std::cerr << "WARNING: best-effort release before gadget reset failed: " << exc.what() << "\n";
+    } catch (...) {
+        std::cerr << "WARNING: best-effort release before gadget reset failed\n";
+    }
+
+    {
+        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+        if (hid_) {
+            hid_->close_without_release();
+            hid_.reset();
+        }
+        next_hid_retry_at_ = {};
+    }
+
+    set_runtime_gadget_reset(reason);
+    try {
+        gadget_teardown(config_);
+    } catch (const std::exception& exc) {
+        std::cerr << "WARNING: gadget teardown during soft reset failed: " << exc.what() << "\n";
+    } catch (...) {
+        std::cerr << "WARNING: gadget teardown during soft reset failed\n";
+    }
+    try {
+        gadget_setup(config_);
+    } catch (const std::exception& exc) {
+        std::string error = std::string("gadget soft reset failed: ") + exc.what();
+        set_runtime_hid_error(error);
+        set_runtime_hid_available(false);
+        led_hid_state(HidLedState::GadgetUnavailable, error);
+        std::cerr << "WARNING: " << error << "\n";
+        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+        next_hid_retry_at_ = std::chrono::steady_clock::now() + kHidRetryInterval;
+        return false;
+    }
+
+    std::string error;
+    if (!try_open_hid_writer(&error)) {
+        set_runtime_hid_error(std::string("HID open failed after gadget reset: ") + error);
+        set_runtime_hid_available(false);
+        led_hid_state(HidLedState::NodeUnavailable, std::string("HID open failed after gadget reset: ") + error);
+        std::cerr << "WARNING: HID open failed after gadget reset: " << error << "\n";
+        std::lock_guard<std::mutex> hid_lock(hid_mutex_);
+        next_hid_retry_at_ = std::chrono::steady_clock::now() + kHidRetryInterval;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(runtime_mutex_);
+        recent_hid_failures_.clear();
+    }
+    return true;
 }
 
 void Daemon::retry_hid_if_due() {
@@ -1585,7 +1722,10 @@ void Daemon::publish_runtime_status(bool daemon_running) {
     std::string last_disconnect_reason;
     std::string last_hid_error;
     std::string last_input_watchdog_release_at;
+    std::string last_gadget_reset_at;
+    std::string last_gadget_reset_reason;
     int accept_worker_count;
+    int gadget_reset_count;
     {
         std::lock_guard<std::mutex> lock(runtime_mutex_);
         tcp_connected = runtime_tcp_connected_;
@@ -1600,7 +1740,10 @@ void Daemon::publish_runtime_status(bool daemon_running) {
         last_disconnect_reason = last_disconnect_reason_;
         last_hid_error = last_hid_error_;
         last_input_watchdog_release_at = last_input_watchdog_release_at_;
+        last_gadget_reset_at = last_gadget_reset_at_;
+        last_gadget_reset_reason = last_gadget_reset_reason_;
         accept_worker_count = runtime_accept_worker_count_;
+        gadget_reset_count = runtime_gadget_reset_count_;
     }
     try {
         write_runtime_status_file(
@@ -1617,6 +1760,9 @@ void Daemon::publish_runtime_status(bool daemon_running) {
             last_disconnect_reason,
             last_hid_error,
             last_input_watchdog_release_at,
+            last_gadget_reset_at,
+            last_gadget_reset_reason,
+            gadget_reset_count,
             accept_worker_count
         );
     } catch (const std::exception& exc) {
@@ -1711,6 +1857,18 @@ void Daemon::set_runtime_accept_worker_count(int count) {
         std::lock_guard<std::mutex> lock(runtime_mutex_);
         runtime_accept_worker_count_ = std::max(0, count);
     }
+}
+
+void Daemon::set_runtime_gadget_reset(const std::string& reason) {
+    {
+        std::lock_guard<std::mutex> lock(runtime_mutex_);
+        last_gadget_reset_steady_ = std::chrono::steady_clock::now();
+        last_gadget_reset_at_ = iso8601_utc_now();
+        last_gadget_reset_reason_ = reason;
+        ++runtime_gadget_reset_count_;
+        recent_hid_failures_.clear();
+    }
+    publish_runtime_status(true);
 }
 
 void Daemon::record_keyboard_pressed_state(int modifiers, const std::vector<int>& keys) {

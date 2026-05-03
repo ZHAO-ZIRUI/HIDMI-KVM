@@ -145,6 +145,7 @@ bool UsbReenumerationGrace::begin(const std::string& session_id, Clock::time_poi
     deadline_ = now + duration_;
     dropped_input_ = false;
     release_needed_ = false;
+    gadget_reset_attempted_ = false;
     return true;
 }
 
@@ -166,11 +167,16 @@ void UsbReenumerationGrace::note_release_needed() {
     if (!session_id_.empty()) release_needed_ = true;
 }
 
+void UsbReenumerationGrace::note_gadget_reset_attempted() {
+    if (!session_id_.empty()) gadget_reset_attempted_ = true;
+}
+
 void UsbReenumerationGrace::clear() {
     session_id_.clear();
     deadline_ = {};
     dropped_input_ = false;
     release_needed_ = false;
+    gadget_reset_attempted_ = false;
 }
 
 }  // namespace hidmi
@@ -610,6 +616,9 @@ void write_runtime_status_file(
     const std::string& last_disconnect_reason,
     const std::string& last_hid_error,
     const std::string& last_input_watchdog_release_at,
+    const std::string& last_gadget_reset_at,
+    const std::string& last_gadget_reset_reason,
+    int gadget_reset_count,
     int accept_worker_count) {
     fs::path path = "/run/hidmi/status.json";
     fs::path temp = path;
@@ -632,6 +641,9 @@ void write_runtime_status_file(
              << "\"last_disconnect_reason\":" << json_escape(last_disconnect_reason) << ","
              << "\"last_hid_error\":" << json_escape(last_hid_error) << ","
              << "\"last_input_watchdog_release_at\":" << json_escape(last_input_watchdog_release_at) << ","
+             << "\"last_gadget_reset_at\":" << json_escape(last_gadget_reset_at) << ","
+             << "\"last_gadget_reset_reason\":" << json_escape(last_gadget_reset_reason) << ","
+             << "\"gadget_reset_count\":" << gadget_reset_count << ","
              << "\"accept_worker_count\":" << accept_worker_count << ","
              << "\"updated_at_ms\":" << epoch_ms()
              << "}\n";

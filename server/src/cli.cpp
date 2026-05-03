@@ -75,7 +75,7 @@ int cli_main(const std::vector<std::string>& args, std::ostream& out, std::ostre
             auto config_path = config_from_cli(args, false);
             auto token_arg = option_value(args, "--token");
             ServerConfig cfg = load_runtime_server_config(config_path);
-            gadget_setup();
+            gadget_setup(cfg);
             Daemon daemon(cfg, token_arg);
             install_daemon_signal_handlers();
             try {
@@ -98,8 +98,8 @@ int cli_main(const std::vector<std::string>& args, std::ostream& out, std::ostre
         }
         if (command == "gadget-setup") {
             auto config_arg = option_value(args, "--config");
-            if (config_arg) (void)load_server_config(*config_arg);
-            gadget_setup();
+            ServerConfig cfg = config_arg ? load_server_config(*config_arg) : ServerConfig{};
+            gadget_setup(cfg);
             return 0;
         }
         if (command == "gadget-teardown") {

@@ -53,6 +53,24 @@ struct ServerConfig {
     LedConfig leds;
 };
 
+struct GadgetSetupPaths {
+    std::filesystem::path configfs_root = "/sys/kernel/config";
+    std::filesystem::path gadget_root = "/sys/kernel/config/usb_gadget/hidmi";
+    std::filesystem::path legacy_gadget_root = "/sys/kernel/config/usb_gadget/hid_bridge";
+    std::filesystem::path udc_root = "/sys/class/udc";
+};
+
+struct GadgetValidationResult {
+    bool mandatory_ready = false;
+    bool keyboard_ready = false;
+    bool mouse_ready = false;
+    bool absolute_ready = false;
+    bool absolute_degraded = false;
+    std::string keyboard_error;
+    std::string mouse_error;
+    std::string absolute_error;
+};
+
 ServerConfig load_server_config(const std::filesystem::path& path);
 ServerConfig parse_server_config(const std::string& text);
 ServerConfig load_runtime_server_config(const std::filesystem::path& path);
@@ -257,12 +275,14 @@ public:
     bool expired(Clock::time_point now) const;
     void note_dropped_input();
     void note_release_needed();
+    void note_gadget_reset_attempted();
     void clear();
 
     const std::string& session_id() const { return session_id_; }
     Clock::time_point deadline() const { return deadline_; }
     bool dropped_input() const { return dropped_input_; }
     bool release_needed() const { return release_needed_; }
+    bool gadget_reset_attempted() const { return gadget_reset_attempted_; }
 
 private:
     std::chrono::seconds duration_;
@@ -270,6 +290,7 @@ private:
     Clock::time_point deadline_{};
     bool dropped_input_ = false;
     bool release_needed_ = false;
+    bool gadget_reset_attempted_ = false;
 };
 
 class Daemon {
@@ -349,8 +370,13 @@ private:
     std::string last_disconnect_reason_;
     std::string last_hid_error_;
     std::string last_input_watchdog_release_at_;
+    std::string last_gadget_reset_at_;
+    std::string last_gadget_reset_reason_;
     int runtime_accept_worker_count_ = 0;
+    int runtime_gadget_reset_count_ = 0;
     std::chrono::steady_clock::time_point next_hid_retry_at_{};
+    std::chrono::steady_clock::time_point last_gadget_reset_steady_{};
+    std::deque<std::chrono::steady_clock::time_point> recent_hid_failures_;
     AuthFailureLimiter auth_failure_limiter_;
     UsbReenumerationGrace usb_grace_;
 
@@ -378,13 +404,18 @@ private:
     void enforce_input_watchdog();
     void update_usb_reenumeration_grace();
     bool usb_grace_blocks_hid_retry();
-    bool begin_usb_reenumeration_grace(std::shared_ptr<PendingSession> session, const std::string& reason, bool dropped_input);
+    bool begin_usb_reenumeration_grace(std::shared_ptr<PendingSession> session, const std::string& reason, bool dropped_input, bool allow_when_configured = false);
     bool drop_input_for_usb_grace(std::shared_ptr<PendingSession> session);
     bool handle_hid_write_failure(std::shared_ptr<PendingSession> session, const std::string& context, const std::exception& exc, bool dropped_input);
+    bool finish_usb_reenumeration_grace(std::shared_ptr<PendingSession> session, const std::string& message);
+    bool try_gadget_reset_for_grace(std::shared_ptr<PendingSession> session, const std::string& reason);
     void send_udp(const sockaddr_storage& addr, socklen_t addr_len, const Message& message);
     void send_udp_error(const sockaddr_storage& addr, socklen_t addr_len, const std::string& code, const std::string& message, bool latch_error = true);
+    bool try_open_hid_writer(std::string* error_out = nullptr);
     bool ensure_hid_available(bool force = false);
     void mark_hid_failed(const std::string& reason);
+    bool should_reset_after_hid_failure(const std::string& reason, bool force);
+    bool perform_gadget_soft_reset(const std::string& reason, bool ignore_cooldown = false);
     void retry_hid_if_due();
     HidWriter& require_hid();
     void set_led_active_client(bool active);
@@ -408,6 +439,7 @@ private:
     void set_runtime_hid_error(const std::string& reason);
     void set_runtime_input_watchdog_release();
     void set_runtime_accept_worker_count(int count);
+    void set_runtime_gadget_reset(const std::string& reason);
     void record_keyboard_pressed_state(int modifiers, const std::vector<int>& keys);
     void record_mouse_pressed_state(int buttons);
     void record_absolute_mouse_pressed_state(int buttons);
@@ -441,8 +473,16 @@ int print_status(const InstallPaths& paths = {}, std::ostream& out = std::cout);
 std::string render_hidmi_service(const InstallPaths& paths);
 std::string render_gadget_service(const InstallPaths& paths);
 
-void gadget_setup();
-void gadget_teardown(const ServerConfig& config);
+GadgetValidationResult validate_gadget_hid_devices(
+    const ServerConfig& config,
+    std::chrono::milliseconds timeout = std::chrono::seconds(5),
+    std::chrono::milliseconds poll_interval = std::chrono::milliseconds(100));
+GadgetValidationResult gadget_setup(
+    const ServerConfig& config,
+    const GadgetSetupPaths& paths = {},
+    std::chrono::milliseconds validation_timeout = std::chrono::seconds(5));
+GadgetValidationResult gadget_setup();
+void gadget_teardown(const ServerConfig& config, const GadgetSetupPaths& paths = {});
 void release_all(const ServerConfig& config);
 
 int cli_main(const std::vector<std::string>& args, std::ostream& out = std::cout, std::ostream& err = std::cerr);

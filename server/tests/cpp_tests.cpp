@@ -600,6 +600,69 @@ void test_hid_writer_failed_open_does_not_leak_fd() {
     fs::remove_all(root);
 }
 
+hidmi::ServerConfig gadget_test_config(const fs::path& root) {
+    hidmi::ServerConfig cfg;
+    cfg.hid.keyboard_path = (root / "dev" / "hidg0").string();
+    cfg.hid.mouse_path = (root / "dev" / "hidg1").string();
+    cfg.hid.absolute_mouse_path = (root / "dev" / "hidg2").string();
+    cfg.hid.udc_state_path = (root / "udc" / "dummy_udc" / "state").string();
+    return cfg;
+}
+
+hidmi::GadgetSetupPaths gadget_test_paths(const fs::path& root) {
+    hidmi::GadgetSetupPaths paths;
+    paths.configfs_root = root / "configfs";
+    paths.gadget_root = root / "configfs" / "usb_gadget" / "hidmi";
+    paths.legacy_gadget_root = root / "configfs" / "usb_gadget" / "hid_bridge";
+    paths.udc_root = root / "udc";
+    return paths;
+}
+
+void test_gadget_validation_allows_absolute_degraded() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-gadget-validation-test-" + hidmi::random_b64url(8));
+    auto cfg = gadget_test_config(root);
+    write_file(cfg.hid.keyboard_path);
+    write_file(cfg.hid.mouse_path);
+
+    auto result = hidmi::validate_gadget_hid_devices(cfg, std::chrono::milliseconds(1), std::chrono::milliseconds(1));
+    expect(result.mandatory_ready, "gadget validation should pass when keyboard and mouse are writable");
+    expect(result.keyboard_ready, "gadget validation should mark keyboard ready");
+    expect(result.mouse_ready, "gadget validation should mark mouse ready");
+    expect(result.absolute_degraded, "missing absolute pointer should be degraded");
+    fs::remove_all(root);
+}
+
+void test_gadget_setup_validates_hid_nodes() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-gadget-setup-test-" + hidmi::random_b64url(8));
+    auto cfg = gadget_test_config(root);
+    auto paths = gadget_test_paths(root);
+    fs::create_directories(paths.udc_root / "dummy_udc");
+    write_file(cfg.hid.udc_state_path, "not attached\n");
+    write_file(cfg.hid.keyboard_path);
+    write_file(cfg.hid.mouse_path);
+
+    auto result = hidmi::gadget_setup(cfg, paths, std::chrono::milliseconds(1));
+    expect(result.mandatory_ready, "gadget setup should succeed after writable mandatory HID nodes exist");
+    expect(fs::exists(paths.gadget_root / "UDC"), "gadget setup should write the UDC binding");
+    expect(read_file(paths.gadget_root / "UDC") == "dummy_udc\n", "gadget setup should bind the first UDC");
+    expect(result.absolute_degraded, "gadget setup should tolerate a missing absolute pointer");
+    fs::remove_all(root);
+}
+
+void test_gadget_setup_missing_mandatory_fails_after_retry() {
+    fs::path root = fs::temp_directory_path() / ("hidmi-gadget-setup-fail-test-" + hidmi::random_b64url(8));
+    auto cfg = gadget_test_config(root);
+    auto paths = gadget_test_paths(root);
+    fs::create_directories(paths.udc_root / "dummy_udc");
+    write_file(cfg.hid.udc_state_path, "configured\n");
+    write_file(cfg.hid.keyboard_path);
+
+    expect_throws_contains("HID gadget validation failed", [&] {
+        (void)hidmi::gadget_setup(cfg, paths, std::chrono::milliseconds(1));
+    }, "gadget setup should fail when mandatory mouse HID is missing");
+    fs::remove_all(root);
+}
+
 void test_units() {
     hidmi::InstallPaths paths;
     auto service = hidmi::render_hidmi_service(paths);
@@ -777,7 +840,11 @@ void test_status_table() {
     write_file(paths.runtime_status_path,
         "{\"daemon_running\":true,\"tcp_connected\":false,\"client_connected\":false,"
         "\"client_proto_mismatch\":true,"
-        "\"last_client_connected_at\":\"2026-01-02T03:04:05Z\",\"updated_at_ms\":9999999999999}\n");
+        "\"last_client_connected_at\":\"2026-01-02T03:04:05Z\","
+        "\"last_gadget_reset_at\":\"2026-01-02T03:04:07Z\","
+        "\"last_gadget_reset_reason\":\"test reset\","
+        "\"gadget_reset_count\":2,"
+        "\"updated_at_ms\":9999999999999}\n");
     std::ostringstream out;
     hidmi::print_status(paths, out);
     std::string text = out.str();
@@ -792,6 +859,9 @@ void test_status_table() {
     expect(text.find("| HID Available") != std::string::npos, "status table missing HID availability row");
     expect(text.find("| UDC State Path") != std::string::npos, "status table missing UDC state path row");
     expect(text.find("ERR(UDC path missing)") != std::string::npos, "missing UDC state path should not look like a HID node error");
+    expect(text.find("| Gadget Reset Count") != std::string::npos, "status table missing gadget reset count row");
+    expect(text.find("| Last Gadget Reset") != std::string::npos, "status table missing last gadget reset row");
+    expect(text.find("2026-01-02T03:04:07Z - test reset") != std::string::npos, "status table missing last gadget reset detail");
     expect(text.find("| UDP Discovery") != std::string::npos, "status table missing discovery row");
     expect(text.find("| TCP Accept") != std::string::npos, "status table missing TCP row");
     expect(text.find("| LED Enabled") != std::string::npos, "status table missing LED enabled row");
@@ -936,6 +1006,9 @@ int main() {
         test_hid_writer_allows_missing_absolute_mouse();
         test_hid_writer_reopens_absolute_mouse_after_degraded_start();
         test_hid_writer_failed_open_does_not_leak_fd();
+        test_gadget_validation_allows_absolute_degraded();
+        test_gadget_setup_validates_hid_nodes();
+        test_gadget_setup_missing_mandatory_fails_after_retry();
         test_units();
         test_led_network_states();
         test_led_hid_flash_states();
