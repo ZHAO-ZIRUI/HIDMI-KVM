@@ -1,8 +1,10 @@
 import Darwin
 import AppKit
+import Combine
 import CoreVideo
 import LocalAuthentication
 import Metal
+import SwiftUI
 import XCTest
 @testable import HIDMI
 
@@ -226,7 +228,7 @@ final class HIDMIControllerTests: XCTestCase {
         }
     }
 
-    func testInputMenuRefreshDoesNotReplaceTopLevelMenuItem() async throws {
+    func testInputMenuManualSnapshotRefreshDoesNotReplaceTopLevelMenuItem() async throws {
         let previousMainMenu = NSApp.mainMenu
         defer { NSApp.mainMenu = previousMainMenu }
 
@@ -235,10 +237,12 @@ final class HIDMIControllerTests: XCTestCase {
         mainMenu.addItem(NSMenuItem(title: String(localized: "menu.view"), action: nil, keyEquivalent: ""))
         NSApp.mainMenu = mainMenu
 
+        let worker = FakeHIDMIWorker()
         let hidmi = HIDMIController(
-            worker: FakeHIDMIWorker(),
+            worker: worker,
             tokenStore: FakeTokenStore(),
-            tokenPrompt: FakeTokenPrompt()
+            tokenPrompt: FakeTokenPrompt(),
+            warningPresenter: FakeConnectionWarningPresenter()
         )
         let model = AppModel(
             hidmi: hidmi,
@@ -253,8 +257,15 @@ final class HIDMIControllerTests: XCTestCase {
         let originalCount = mainMenu.items.count
 
         let device = makeDevice(id: "device-a", host: "192.168.1.10", requiresAuth: false)
+        await worker.setDiscoveryResults([[device], [device]])
         hidmi.mergeDiscoveredDevices([device], seenAt: Date())
         XCTAssertFalse(menuController.menu.items.contains { $0.title == device.displayName })
+        menuController.menuNeedsUpdate(menuController.menu)
+        XCTAssertFalse(menuController.menu.items.contains { $0.title == device.displayName })
+        model.refreshHIDMIMenuDevices()
+        await waitUntil {
+            model.menuState.snapshot.inputDevices.contains { $0.title == device.displayName }
+        }
         menuController.menuNeedsUpdate(menuController.menu)
 
         let updatedItem = try XCTUnwrap(mainMenu.items.first { $0.submenu === menuController.menu })
@@ -263,7 +274,7 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertTrue(menuController.menu.items.contains { $0.title == device.displayName })
     }
 
-    func testInputMenuInstallsAfterHelpMenuToAvoidSystemMenuClobbering() throws {
+    func testInputMenuInstallsBeforeWindowWhenVideoMenuIsMissing() throws {
         let previousMainMenu = NSApp.mainMenu
         defer { NSApp.mainMenu = previousMainMenu }
 
@@ -291,11 +302,11 @@ final class HIDMIControllerTests: XCTestCase {
         let inputIndex = try XCTUnwrap(mainMenu.items.firstIndex { $0.submenu === menuController.menu })
         let windowIndex = try XCTUnwrap(mainMenu.items.firstIndex { $0.title == String(localized: "menu.window") })
         let helpIndex = try XCTUnwrap(mainMenu.items.firstIndex { $0.title == "Help" })
-        XCTAssertGreaterThan(inputIndex, windowIndex)
-        XCTAssertGreaterThan(inputIndex, helpIndex)
+        XCTAssertLessThan(inputIndex, windowIndex)
+        XCTAssertGreaterThan(helpIndex, windowIndex)
     }
 
-    func testCustomMenusRepairTopLevelOnModelChangeWithoutEagerSubmenuRebuild() async throws {
+    func testCustomMenusDoNotRepairTopLevelOnModelChange() async throws {
         let previousMainMenu = NSApp.mainMenu
         defer { NSApp.mainMenu = previousMainMenu }
 
@@ -316,14 +327,14 @@ final class HIDMIControllerTests: XCTestCase {
             startsVideoInputSetup: false
         )
         let inputMenu = HIDInputMenuController()
-        let viewMenu = ViewMenuController()
+        let videoMenu = VideoMenuController()
         inputMenu.bind(model: model)
-        viewMenu.bind(model: model)
-        viewMenu.installOrUpdate()
+        videoMenu.bind(model: model)
+        videoMenu.installOrUpdate()
         inputMenu.installOrUpdate()
 
         _ = try XCTUnwrap(originalMainMenu.items.first { $0.submenu === inputMenu.menu })
-        _ = try XCTUnwrap(originalMainMenu.items.first { $0.submenu === viewMenu.menu })
+        _ = try XCTUnwrap(originalMainMenu.items.first { $0.submenu === videoMenu.menu })
 
         let recreatedMainMenu = NSMenu(title: "Recreated Main Menu")
         recreatedMainMenu.addItem(NSMenuItem(title: "HIDMI", action: nil, keyEquivalent: ""))
@@ -333,20 +344,15 @@ final class HIDMIControllerTests: XCTestCase {
 
         let device = makeDevice(id: "device-a", host: "192.168.1.10", name: "Lazy KVM", requiresAuth: false)
         hidmi.mergeDiscoveredDevices([device], seenAt: Date())
-        await waitUntil {
-            recreatedMainMenu.items.contains { $0.submenu === inputMenu.menu }
-                && recreatedMainMenu.items.contains { $0.submenu === viewMenu.menu }
-        }
 
-        XCTAssertTrue(recreatedMainMenu.items.contains { $0.submenu === inputMenu.menu })
-        XCTAssertTrue(recreatedMainMenu.items.contains { $0.submenu === viewMenu.menu })
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertFalse(recreatedMainMenu.items.contains { $0.submenu === inputMenu.menu })
+        XCTAssertFalse(recreatedMainMenu.items.contains { $0.submenu === videoMenu.menu })
         XCTAssertFalse(inputMenu.menu.items.contains { $0.title == device.displayName })
-
-        inputMenu.menuNeedsUpdate(inputMenu.menu)
-        XCTAssertTrue(inputMenu.menu.items.contains { $0.title == device.displayName })
     }
 
-    func testCustomMenusRepairWhenSystemClobbersSubmenus() throws {
+    func testCustomMenusReattachOnlyWhenExplicitlyInstalledAgain() throws {
         let previousMainMenu = NSApp.mainMenu
         defer { NSApp.mainMenu = previousMainMenu }
 
@@ -367,23 +373,569 @@ final class HIDMIControllerTests: XCTestCase {
             startsVideoInputSetup: false
         )
         let inputMenu = HIDInputMenuController()
-        let viewMenu = ViewMenuController()
+        let videoMenu = VideoMenuController()
         inputMenu.bind(model: model)
-        viewMenu.bind(model: model)
-        viewMenu.installOrUpdate()
+        videoMenu.bind(model: model)
+        videoMenu.installOrUpdate()
         inputMenu.installOrUpdate()
 
         try XCTUnwrap(mainMenu.items.first { $0.submenu === inputMenu.menu }).submenu = NSMenu(title: "Clobbered Input")
-        try XCTUnwrap(mainMenu.items.first { $0.submenu === viewMenu.menu }).submenu = NSMenu(title: "Clobbered View")
+        try XCTUnwrap(mainMenu.items.first { $0.submenu === videoMenu.menu }).submenu = NSMenu(title: "Clobbered Video")
 
-        viewMenu.repairTopLevelInstallation()
+        videoMenu.repairTopLevelInstallation()
         inputMenu.repairTopLevelInstallation()
-
         XCTAssertTrue(mainMenu.items.contains { $0.submenu === inputMenu.menu })
-        XCTAssertTrue(mainMenu.items.contains { $0.submenu === viewMenu.menu })
+        XCTAssertTrue(mainMenu.items.contains { $0.submenu === videoMenu.menu })
+        XCTAssertTrue(inputMenu.menu.items.isEmpty)
+        XCTAssertTrue(videoMenu.menu.items.isEmpty)
+    }
+
+    func testApplicationMenusKeepSystemMenusAndInstallOnlyHelpTokenManagement() throws {
+        let previousMainMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMainMenu }
+
+        let mainMenu = NSMenu(title: "Test Main Menu")
+        mainMenu.addItem(NSMenuItem(title: "HIDMI", action: nil, keyEquivalent: ""))
+        let viewItem = NSMenuItem(title: String(localized: "menu.view"), action: nil, keyEquivalent: "")
+        let viewMenu = NSMenu(title: String(localized: "menu.view"))
+        let fullScreenItem = NSMenuItem(
+            title: "System Full Screen",
+            action: #selector(NSWindow.toggleFullScreen(_:)),
+            keyEquivalent: "f"
+        )
+        viewMenu.addItem(fullScreenItem)
+        viewItem.submenu = viewMenu
+        mainMenu.addItem(viewItem)
+        let windowItem = NSMenuItem(title: String(localized: "menu.window"), action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: String(localized: "menu.window"))
+        windowItem.submenu = windowMenu
+        mainMenu.addItem(windowItem)
+        let helpItem = NSMenuItem(title: String(localized: "menu.help"), action: nil, keyEquivalent: "")
+        let helpMenu = NSMenu(title: String(localized: "menu.help"))
+        helpItem.submenu = helpMenu
+        mainMenu.addItem(helpItem)
+        NSApp.mainMenu = mainMenu
+
+        let model = AppModel(
+            hidmi: HIDMIController(
+                worker: FakeHIDMIWorker(),
+                tokenStore: FakeTokenStore(),
+                tokenPrompt: FakeTokenPrompt()
+            ),
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+        let coordinator = HIDMIMenuCoordinator()
+        coordinator.bind(model: model)
+        coordinator.installOrRepairWhenReady()
+
+        XCTAssertTrue(mainMenu.items.contains { $0 === viewItem })
+        XCTAssertTrue(mainMenu.items.contains { $0 === windowItem })
+        XCTAssertTrue(viewItem.submenu === viewMenu)
+        XCTAssertTrue(windowItem.submenu === windowMenu)
+        XCTAssertTrue(viewMenu.items.contains { $0 === fullScreenItem })
+        XCTAssertEqual(fullScreenItem.action, #selector(NSWindow.toggleFullScreen(_:)))
+        XCTAssertNil(mainMenu.items.first { $0.title == String(localized: "menu.video") })
+        XCTAssertNil(mainMenu.items.first { $0.title == String(localized: "menu.hid") })
+
+        let tokenItems = helpMenu.items.filter { $0.title == String(localized: "token.management") }
+        XCTAssertEqual(tokenItems.count, 1)
+        XCTAssertEqual(tokenItems.first?.action, NSSelectorFromString("showTokenManagement:"))
+        XCTAssertNotNil(tokenItems.first?.target)
+
+        coordinator.installOrRepairWhenReady()
+        XCTAssertEqual(helpMenu.items.filter { $0.title == String(localized: "token.management") }.count, 1)
+    }
+
+    func testMenuTrackingGateFreezesOnlyMainMenuTracking() async throws {
+        let previousMainMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMainMenu }
+        let suiteName = "HIDMIMenuBarTrackingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let mainMenu = NSMenu(title: "Test Main Menu")
+        let appItem = NSMenuItem(title: "HIDMI", action: nil, keyEquivalent: "")
+        let videoItem = NSMenuItem(title: String(localized: "menu.video"), action: nil, keyEquivalent: "")
+        let inputItem = NSMenuItem(title: String(localized: "menu.hid"), action: nil, keyEquivalent: "")
+        let windowItem = NSMenuItem(title: String(localized: "menu.window"), action: nil, keyEquivalent: "")
+        let videoMenu = NSMenu(title: String(localized: "menu.video"))
+        let statusMenu = NSMenu(title: String(localized: "view.status_bar"))
+        let statusItem = NSMenuItem(title: String(localized: "view.status_bar"), action: nil, keyEquivalent: "")
+        statusItem.submenu = statusMenu
+        videoMenu.addItem(statusItem)
+        let inputMenu = NSMenu(title: String(localized: "menu.hid"))
+        let windowMenu = NSMenu(title: String(localized: "menu.window"))
+        videoItem.submenu = videoMenu
+        inputItem.submenu = inputMenu
+        windowItem.submenu = windowMenu
+        for item in [appItem, videoItem, inputItem, windowItem] {
+            mainMenu.addItem(item)
+        }
+        NSApp.mainMenu = mainMenu
+
+        let model = AppModel(
+            hidmi: HIDMIController(
+                worker: FakeHIDMIWorker(),
+                tokenStore: FakeTokenStore(),
+                tokenPrompt: FakeTokenPrompt()
+            ),
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false,
+            userDefaults: defaults
+        )
+
+        let gate = MenuTrackingGate()
+        gate.onBeginTracking = { model.beginMenuTracking() }
+        gate.onEndTracking = { model.endMenuTracking() }
+
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: statusMenu)
+        XCTAssertFalse(model.isRemoteInputSuspendedByMenu)
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: statusMenu)
+        XCTAssertFalse(model.isRemoteInputSuspendedByMenu)
+
+        model.setStatusBarDetailMode(.iconOnly)
+        model.applyCurrentMenuSnapshotWhenSafe()
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: windowMenu)
+        XCTAssertFalse(model.isRemoteInputSuspendedByMenu)
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: windowMenu)
+
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: mainMenu)
+        XCTAssertTrue(model.isRemoteInputSuspendedByMenu)
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+        model.setStatusBarDetailMode(.detailed)
+        model.applyCurrentMenuSnapshotWhenSafe()
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+        XCTAssertEqual(model.menuState.pendingSnapshot.statusBarDetailMode, .detailed)
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: statusMenu)
+        XCTAssertTrue(model.isRemoteInputSuspendedByMenu)
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: statusMenu)
+        XCTAssertTrue(model.isRemoteInputSuspendedByMenu)
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: mainMenu)
+        XCTAssertFalse(model.isRemoteInputSuspendedByMenu)
+        await waitUntil {
+            model.menuState.snapshot.statusBarDetailMode == .detailed
+        }
+        withExtendedLifetime(gate) {}
+    }
+
+    func testMenuTrackingDoesNotPublishModelChangesWhileMenuIsOpen() {
+        let model = AppModel(
+            hidmi: HIDMIController(
+                worker: FakeHIDMIWorker(),
+                tokenStore: FakeTokenStore(),
+                tokenPrompt: FakeTokenPrompt()
+            ),
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+        var objectWillChangeCount = 0
+        let cancellable = model.objectWillChange.sink {
+            objectWillChangeCount += 1
+        }
+
+        model.beginMenuTracking()
+        model.endMenuTracking()
+
+        XCTAssertEqual(objectWillChangeCount, 0)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testMenuStateStagesChangesUntilManualSnapshotApply() throws {
+        let suiteName = "HIDMIMenuStateFreezeTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let model = AppModel(
+            hidmi: HIDMIController(
+                worker: FakeHIDMIWorker(),
+                tokenStore: FakeTokenStore(),
+                tokenPrompt: FakeTokenPrompt()
+            ),
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false,
+            userDefaults: defaults
+        )
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .detailed)
+        model.setStatusBarDetailMode(.iconOnly)
+
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .detailed)
+        XCTAssertEqual(model.menuState.pendingSnapshot.statusBarDetailMode, .iconOnly)
+        model.applyPendingMenuSnapshot()
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+
+        model.beginMenuTracking(suspendsRemoteInput: false)
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+
+        model.setStatusBarDetailMode(.detailed)
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+        XCTAssertEqual(model.menuState.pendingSnapshot.statusBarDetailMode, .detailed)
+
+        model.endMenuTracking()
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+
+        model.applyPendingMenuSnapshot()
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .detailed)
+        model.beginMenuTracking(suspendsRemoteInput: false)
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .detailed)
+        model.endMenuTracking()
+    }
+
+    func testMenuSnapshotApplyRequestedDuringTrackingIsDeferredUntilClose() async throws {
+        let suiteName = "HIDMIMenuDeferredApplyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let model = AppModel(
+            hidmi: HIDMIController(
+                worker: FakeHIDMIWorker(),
+                tokenStore: FakeTokenStore(),
+                tokenPrompt: FakeTokenPrompt()
+            ),
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false,
+            userDefaults: defaults
+        )
+
+        model.setStatusBarDetailMode(.iconOnly)
+        model.applyPendingMenuSnapshotWhenSafe()
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+
+        model.beginMenuTracking(suspendsRemoteInput: false)
+        model.setStatusBarDetailMode(.detailed)
+        model.applyPendingMenuSnapshotWhenSafe()
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+        XCTAssertEqual(model.menuState.pendingSnapshot.statusBarDetailMode, .detailed)
+
+        model.endMenuTracking()
+        await waitUntil {
+            model.menuState.snapshot.statusBarDetailMode == .detailed
+        }
+    }
+
+    func testMenuSnapshotReflectsKVMDeviceStates() async {
+        let hidmi = HIDMIController(
+            worker: FakeHIDMIWorker(),
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt()
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+        let device = makeDevice(
+            id: "device-menu-snapshot",
+            host: "192.168.1.10",
+            name: "Desk KVM",
+            requiresAuth: false
+        )
+
+        hidmi.mergeDiscoveredDevices([device], seenAt: Date())
+        model.stageCurrentMenuSnapshot()
+        XCTAssertTrue(model.menuState.snapshot.inputDevices.isEmpty)
+        XCTAssertEqual(model.menuState.pendingSnapshot.inputDevices.map(\.id), [device.discoveryID])
+        model.applyPendingMenuSnapshot()
+
+        let item = model.menuState.snapshot.inputDevices[0]
+        XCTAssertEqual(item.id, device.discoveryID)
+        XCTAssertEqual(item.title, "Desk KVM")
+        XCTAssertEqual(item.marker, .available)
+        XCTAssertEqual(item.actionTitle, String(localized: "hid.device.connect_this_device"))
+        XCTAssertTrue(item.isActionEnabled)
+        XCTAssertFalse(model.menuState.snapshot.isHIDMIConnected)
+    }
+
+    func testStatusSelectorSnapshotReflectsKVMDeviceStatesAndFreezesByValue() async {
+        let hidmi = HIDMIController(
+            worker: FakeHIDMIWorker(),
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt()
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+        let emptySnapshot = model.makeStatusSelectorSnapshot()
+        XCTAssertTrue(emptySnapshot.kvmDevices.isEmpty)
+        XCTAssertEqual(emptySnapshot.statusBar.kvm.signal, .red)
+        XCTAssertEqual(emptySnapshot.statusBar.kvm.symbolName, "command")
+
+        let device = makeDevice(
+            id: "device-selector-snapshot",
+            host: "192.168.1.20",
+            name: "Selector KVM",
+            transport: .wlan,
+            requiresAuth: false
+        )
+        hidmi.mergeDiscoveredDevices([device], seenAt: Date())
+
+        XCTAssertTrue(emptySnapshot.kvmDevices.isEmpty)
+        let snapshot = model.makeStatusSelectorSnapshot()
+        XCTAssertEqual(snapshot.kvmDevices.map(\.id), [device.discoveryID])
+        XCTAssertEqual(snapshot.kvmDevices.first?.title, "Selector KVM")
+        XCTAssertEqual(snapshot.kvmDevices.first?.marker, .available)
+        XCTAssertEqual(snapshot.kvmDevices.first?.symbolName, "wifi")
+        XCTAssertEqual(snapshot.statusBar.kvm.signal, .yellow)
+        XCTAssertEqual(snapshot.statusBar.kvm.symbolName, "command")
+    }
+
+    func testKVMSelectorKeepsOtherEndpointsEnabledWhileConnecting() async throws {
+        let ethernet = makeDevice(
+            id: "same-kvm",
+            host: "10.0.0.46",
+            name: "Orange Pi Zero 3 KVM",
+            transport: .ethernet,
+            requiresAuth: false
+        )
+        let wlan = makeDevice(
+            id: "same-kvm",
+            host: "10.0.0.33",
+            name: "Orange Pi Zero 3 KVM",
+            transport: .wlan,
+            requiresAuth: false
+        )
+        let worker = FakeHIDMIWorker()
+        await worker.setAcceptedToken("", device: ethernet)
+        await worker.setConnectDelay(0.2)
+        let hidmi = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt(),
+            warningPresenter: FakeConnectionWarningPresenter()
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+
+        hidmi.mergeDiscoveredDevices([ethernet, wlan], seenAt: Date())
+        model.connectHIDMI(wlan.discoveryID)
+        let snapshot = model.makeStatusSelectorSnapshot()
+        let ethernetItem = try XCTUnwrap(snapshot.kvmDevices.first(where: { $0.id == ethernet.discoveryID }))
+        let wlanItem = try XCTUnwrap(snapshot.kvmDevices.first(where: { $0.id == wlan.discoveryID }))
+
+        XCTAssertTrue(snapshot.isHIDMIConnecting)
+        XCTAssertEqual(snapshot.connectingHIDMIDeviceID, wlan.discoveryID)
+        XCTAssertEqual(wlanItem.connectionState, .connecting)
+        XCTAssertTrue(wlanItem.isActionEnabled)
+        XCTAssertEqual(wlanItem.actionTitle, String(localized: "hid.device.cancel_connection"))
+        XCTAssertEqual(ethernetItem.connectionState, .available)
+        XCTAssertTrue(ethernetItem.isActionEnabled)
+
+        model.cancelHIDMIConnectionAttempt()
+        let cancelledSnapshot = model.makeStatusSelectorSnapshot()
+        XCTAssertFalse(cancelledSnapshot.isHIDMIConnecting)
+        XCTAssertNil(cancelledSnapshot.connectingHIDMIDeviceID)
+    }
+
+    func testKVMSelectorRecordsEndpointFailuresWithoutDisablingOtherEndpointsOrFallingBack() async throws {
+        let ethernet = makeDevice(
+            id: "same-kvm",
+            host: "10.0.0.46",
+            name: "Orange Pi Zero 3 KVM",
+            transport: .ethernet,
+            requiresAuth: false
+        )
+        let wlan = makeDevice(
+            id: "same-kvm",
+            host: "10.0.0.33",
+            name: "Orange Pi Zero 3 KVM",
+            transport: .wlan,
+            requiresAuth: false
+        )
+        let worker = FakeHIDMIWorker()
+        await worker.setAcceptedToken("", device: ethernet)
+        await worker.setConnectError(HIDMIClientError.posix("connect", EHOSTUNREACH), for: wlan.discoveryID)
+        let warnings = FakeConnectionWarningPresenter()
+        let hidmi = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt(),
+            warningPresenter: warnings
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+
+        hidmi.mergeDiscoveredDevices([ethernet, wlan], seenAt: Date())
+        model.connectHIDMI(wlan.discoveryID)
+        await waitUntil {
+            if case .failed = hidmi.status {
+                return true
+            }
+            return false
+        }
+
+        let firstAttempts = await worker.connectDeviceAttempts()
+        XCTAssertEqual(firstAttempts, [wlan.discoveryID])
+        XCTAssertTrue(warnings.failureWarnings.isEmpty)
+        let failedSnapshot = model.makeStatusSelectorSnapshot()
+        let failedWLAN = try XCTUnwrap(failedSnapshot.kvmDevices.first(where: { $0.id == wlan.discoveryID }))
+        let availableEthernet = try XCTUnwrap(failedSnapshot.kvmDevices.first(where: { $0.id == ethernet.discoveryID }))
+        guard case .failed(let message) = failedWLAN.connectionState else {
+            return XCTFail("Expected Wi-Fi endpoint to hold its own failure")
+        }
+        XCTAssertTrue(message.contains(String(localized: "error.network_unreachable")))
+        XCTAssertTrue(failedWLAN.isActionEnabled)
+        XCTAssertEqual(failedWLAN.actionTitle, String(localized: "hid.device.retry_connection"))
+        XCTAssertEqual(availableEthernet.connectionState, .available)
+        XCTAssertTrue(availableEthernet.isActionEnabled)
+
+        model.connectHIDMI(ethernet.discoveryID)
+        await waitUntil { hidmi.connectedDeviceID == ethernet.discoveryID }
+        let secondAttempts = await worker.connectDeviceAttempts()
+        XCTAssertEqual(secondAttempts, [wlan.discoveryID, ethernet.discoveryID])
+    }
+
+    func testKVMSelectorPreservesOpenRowsWhileMergingEndpointState() async {
+        let first = makeDevice(id: "kvm-a", host: "10.0.0.46", name: "First KVM", requiresAuth: false)
+        let second = makeDevice(id: "kvm-b", host: "10.0.0.47", name: "Second KVM", requiresAuth: false)
+        let worker = FakeHIDMIWorker()
+        await worker.setConnectError(HIDMIClientError.posix("connect", ECONNREFUSED), for: first.discoveryID)
+        let hidmi = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt(),
+            warningPresenter: FakeConnectionWarningPresenter()
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+
+        hidmi.mergeDiscoveredDevices([first], seenAt: Date())
+        let openedSnapshot = model.makeStatusSelectorSnapshot()
+        hidmi.mergeDiscoveredDevices([first, second], seenAt: Date())
+        model.connectHIDMI(first.discoveryID)
+        await waitUntil {
+            if case .failed = hidmi.status {
+                return true
+            }
+            return false
+        }
+
+        let merged = openedSnapshot.mergingKVMStatePreservingRows(from: model.makeStatusSelectorSnapshot())
+        XCTAssertEqual(merged.kvmDevices.map(\.id), [first.discoveryID])
+        let expectedMessage = String(
+            format: String(localized: "hidmi.connection.operation_failed"),
+            String(localized: "hid.operation.connect"),
+            String(localized: "error.connection_refused")
+        )
+        if case .failed(let message) = merged.kvmDevices.first?.connectionState {
+            XCTAssertEqual(message, expectedMessage)
+        } else {
+            XCTFail("Expected existing row to merge latest failure state")
+        }
+    }
+
+    func testKVMConnectionErrorsUseSpecificUserFacingMessages() {
+        XCTAssertEqual(
+            HIDMIClientError.posix("connect", EHOSTUNREACH).userFacingConnectionDescription,
+            String(localized: "error.network_unreachable")
+        )
+        XCTAssertEqual(
+            HIDMIClientError.message("No route to host").userFacingConnectionDescription,
+            String(localized: "error.network_unreachable")
+        )
+        XCTAssertEqual(
+            HIDMIClientError.posix("connect", ECONNREFUSED).userFacingConnectionDescription,
+            String(localized: "error.connection_refused")
+        )
+        XCTAssertEqual(
+            HIDMIClientError.posix("connect", ETIMEDOUT).userFacingConnectionDescription,
+            String(localized: "error.device_response_timeout")
+        )
+    }
+
+    func testSelectorInteractionSuspendsRemoteInputWithoutMenuTrackingFreeze() async throws {
+        let device = makeDevice(id: "device-selector-input", host: "192.168.1.10", requiresAuth: false)
+        let worker = FakeHIDMIWorker()
+        await worker.setAcceptedToken("", device: device)
+        let hidmi = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt()
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+        hidmi.mergeDiscoveredDevices([device], seenAt: Date())
+        model.connectHIDMI(device.discoveryID)
+        await waitUntil { hidmi.isConnected }
+
+        let event = try makeKeyEvent()
+        XCTAssertTrue(model.handleRemoteInput(.keyDown(event)))
+        await waitUntil { await worker.sentReportCount() == 1 }
+
+        model.beginSelectorInteraction()
+        XCTAssertTrue(model.isRemoteInputSuspendedByMenu)
+        XCTAssertFalse(model.handleRemoteInput(.keyDown(event)))
+        await waitUntil { await worker.bestEffortReleaseAllCallCount() == 1 }
+
+        model.setStatusBarDetailMode(.iconOnly)
+        model.applyCurrentMenuSnapshotWhenSafe()
+        XCTAssertEqual(model.menuState.snapshot.statusBarDetailMode, .iconOnly)
+
+        model.endSelectorInteraction()
+        XCTAssertFalse(model.isRemoteInputSuspendedByMenu)
+        XCTAssertTrue(model.handleRemoteInput(.keyDown(event)))
+        await waitUntil { await worker.sentReportCount() == 2 }
+    }
+
+    func testPointerInputDiagnosticsDoNotPublishMenuStateChanges() async {
+        let device = makeDevice(id: "device-input-menu-publish", host: "192.168.1.10", requiresAuth: false)
+        let worker = FakeHIDMIWorker()
+        await worker.setAcceptedToken("", device: device)
+        let hidmi = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt()
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+        hidmi.mergeDiscoveredDevices([device], seenAt: Date())
+        model.connectHIDMI(device.discoveryID)
+        await waitUntil { hidmi.isConnected }
+        model.applyCurrentMenuSnapshot()
+        XCTAssertTrue(model.menuState.snapshot.isHIDMIConnected)
+
+        let snapshotBeforeInputDiagnostics = model.menuState.snapshot
+
+        hidmi.sendReports(
+            [.absoluteMouse(buttons: 0, x: 100, y: 200)],
+            source: .pointerMove,
+            sampleMonoUs: 123_456
+        )
+
+        await waitUntil { hidmi.inputDiagnostics.mouseReportsWritten == 1 }
+        XCTAssertEqual(hidmi.inputDiagnostics.mouseEventsCaptured, 1)
+        XCTAssertEqual(model.menuState.snapshot, snapshotBeforeInputDiagnostics)
     }
 
     func testMenuTrackingSuspendsRemoteInputAndReleasesOnce() async throws {
+        let previousMainMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMainMenu }
+        let mainMenu = NSMenu(title: "Test Main Menu")
+        NSApp.mainMenu = mainMenu
+
         let device = makeDevice(id: "device-a", host: "192.168.1.10", requiresAuth: false)
         let worker = FakeHIDMIWorker()
         await worker.setAcceptedToken("", device: device)
@@ -397,10 +949,9 @@ final class HIDMIControllerTests: XCTestCase {
             cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
             startsVideoInputSetup: false
         )
-        let inputMenu = HIDInputMenuController()
-        inputMenu.bind(model: model)
-        let viewMenu = ViewMenuController()
-        viewMenu.bind(model: model)
+        let gate = MenuTrackingGate()
+        gate.onBeginTracking = { model.beginMenuTracking() }
+        gate.onEndTracking = { model.endMenuTracking() }
 
         hidmi.mergeDiscoveredDevices([device], seenAt: Date())
         model.connectHIDMI(device.discoveryID)
@@ -410,7 +961,7 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertTrue(model.handleRemoteInput(.keyDown(event)))
         await waitUntil { await worker.sentReportCount() == 1 }
 
-        inputMenu.menuWillOpen(inputMenu.menu)
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: mainMenu)
         XCTAssertTrue(model.isRemoteInputSuspendedByMenu)
         XCTAssertFalse(model.handleRemoteInput(.keyDown(event)))
         await waitUntil { await worker.bestEffortReleaseAllCallCount() == 1 }
@@ -419,17 +970,18 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertEqual(suspendedReportCount, 1)
         XCTAssertEqual(initialReleaseCount, 1)
 
-        viewMenu.menuWillOpen(viewMenu.menu)
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: mainMenu)
         try? await Task.sleep(for: .milliseconds(30))
         let nestedReleaseCount = await worker.bestEffortReleaseAllCallCount()
         XCTAssertEqual(nestedReleaseCount, 1)
-        viewMenu.menuDidClose(viewMenu.menu)
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: mainMenu)
         XCTAssertTrue(model.isRemoteInputSuspendedByMenu)
 
-        inputMenu.menuDidClose(inputMenu.menu)
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: mainMenu)
         XCTAssertFalse(model.isRemoteInputSuspendedByMenu)
         XCTAssertTrue(model.handleRemoteInput(.keyDown(event)))
         await waitUntil { await worker.sentReportCount() == 2 }
+        withExtendedLifetime(gate) {}
     }
 
     func testRemoteInputMapperResetReturnsCompleteReleaseReports() throws {
@@ -978,6 +1530,76 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertEqual(store.preference(for: "capture-a"), .automatic)
     }
 
+    func testStatusSelectorCaptureFormatChoicesSplitAndPreserveNearbySelection() {
+        let fourK60NV12 = makeCaptureFormatItem(
+            id: "capture-a#1",
+            width: 3840,
+            height: 2160,
+            maxFrameRate: 60,
+            mediaSubType: fourCC("NV12")
+        )
+        let fourK30MJPG = makeCaptureFormatItem(
+            id: "capture-a#2",
+            width: 3840,
+            height: 2160,
+            maxFrameRate: 30,
+            mediaSubType: fourCC("MJPG")
+        )
+        let fullHD60NV12 = makeCaptureFormatItem(
+            id: "capture-a#3",
+            width: 1920,
+            height: 1080,
+            maxFrameRate: 60,
+            mediaSubType: fourCC("NV12"),
+            isSelected: true
+        )
+        let fullHD60MJPG = makeCaptureFormatItem(
+            id: "capture-a#4",
+            width: 1920,
+            height: 1080,
+            maxFrameRate: 60,
+            mediaSubType: fourCC("MJPG")
+        )
+        let snapshot = makeStatusSelectorSnapshot(
+            usesAutomaticCaptureFormat: false,
+            captureFormats: [fourK60NV12, fourK30MJPG, fullHD60NV12, fullHD60MJPG]
+        )
+
+        XCTAssertEqual(
+            StatusSelectorCaptureFormatChoices.resolutionOptions(in: snapshot.captureFormats).map(\.title),
+            ["3840x2160", "1920x1080"]
+        )
+        XCTAssertEqual(
+            StatusSelectorCaptureFormatChoices.frameRateOptions(
+                in: snapshot.captureFormats,
+                resolution: VideoDimensions(width: 3840, height: 2160)
+            ).map(\.title),
+            ["60 fps", "30 fps"]
+        )
+        XCTAssertEqual(
+            StatusSelectorCaptureFormatChoices.colorFormatOptions(
+                in: snapshot.captureFormats,
+                resolution: VideoDimensions(width: 1920, height: 1080),
+                frameRateMillis: 60_000
+            ).map(\.title),
+            ["NV12", "MJPG"]
+        )
+        XCTAssertEqual(
+            StatusSelectorCaptureFormatChoices.formatID(
+                selectingResolution: VideoDimensions(width: 3840, height: 2160),
+                in: snapshot
+            ),
+            fourK60NV12.id
+        )
+        XCTAssertEqual(
+            StatusSelectorCaptureFormatChoices.formatID(
+                selectingColorFormat: fourCC("MJPG"),
+                in: snapshot
+            ),
+            fullHD60MJPG.id
+        )
+    }
+
     func testOriginalInputSizingUsesBackingScaleAndPixelAlignment() {
         XCTAssertEqual(
             PreviewSizing.frameSize(
@@ -1002,6 +1624,45 @@ final class HIDMIControllerTests: XCTestCase {
     func testPreviewLayoutTopReservedHeightOnlyAppliesOutsideFullScreen() {
         XCTAssertEqual(PreviewLayout.topReservedHeight(isFullScreen: false), 32)
         XCTAssertEqual(PreviewLayout.topReservedHeight(isFullScreen: true), 0)
+    }
+
+    func testStatusDrawerPlacementConstrainsClosedHandleToSafeArea() {
+        let top = StatusDrawerPlacement(
+            containerSize: CGSize(width: 800, height: 600),
+            safeAreaInsets: EdgeInsets(top: 20, leading: 0, bottom: 10, trailing: 0),
+            position: 0,
+            isOpen: false
+        )
+        let bottom = StatusDrawerPlacement(
+            containerSize: CGSize(width: 800, height: 600),
+            safeAreaInsets: EdgeInsets(top: 20, leading: 0, bottom: 10, trailing: 0),
+            position: 1,
+            isOpen: false
+        )
+
+        XCTAssertEqual(top.width, StatusDrawerPlacement.handleWidth)
+        XCTAssertEqual(top.height, StatusDrawerPlacement.handleHeight)
+        XCTAssertEqual(top.centerY, 56 + StatusDrawerPlacement.handleHeight / 2)
+        XCTAssertEqual(bottom.centerY, 600 - 48 - StatusDrawerPlacement.handleHeight / 2)
+        XCTAssertGreaterThan(bottom.centerRange, 0)
+    }
+
+    func testStatusDrawerPlacementConstrainsOpenDrawerToSafeArea() {
+        let containerHeight: CGFloat = 420
+        let topInset = max(CGFloat(56), CGFloat(30 + 24))
+        let bottomInset = max(CGFloat(48), CGFloat(20 + 32))
+        let expectedHeight = containerHeight - topInset - bottomInset
+        let placement = StatusDrawerPlacement(
+            containerSize: CGSize(width: 900, height: containerHeight),
+            safeAreaInsets: EdgeInsets(top: 30, leading: 0, bottom: 20, trailing: 0),
+            position: 1,
+            isOpen: true
+        )
+
+        XCTAssertEqual(placement.width, StatusDrawerPlacement.handleWidth + StatusDrawerPlacement.drawerWidth)
+        XCTAssertEqual(placement.height, expectedHeight)
+        XCTAssertEqual(placement.centerX, 900 - placement.width / 2)
+        XCTAssertEqual(placement.centerY, containerHeight - bottomInset - expectedHeight / 2)
     }
 
     func testPreviewRenderGeometryAlignsDrawableAndAspectFitRectToPhysicalPixels() {
@@ -1293,49 +1954,193 @@ final class HIDMIControllerTests: XCTestCase {
         }
     }
 
-    func testViewMenuControllerBuildsExpectedSectionsAndHasNoImages() {
+    func testVideoMenuControllerBuildsCaptureSectionsAndHasNoImages() {
         let model = AppModel(startsVideoInputSetup: false)
-        let controller = ViewMenuController()
+        let controller = VideoMenuController()
         controller.bind(model: model)
         controller.rebuildMenu()
 
         let items = controller.menu.items
-        XCTAssertEqual(items.count, 8)
-        XCTAssertEqual(items[0].title, String(localized: "device.none"))
+        XCTAssertEqual(items.count, 9)
+        XCTAssertEqual(items[0].title, String(localized: "view.status_bar"))
+        XCTAssertEqual(items[0].submenu?.items.count, 7)
         XCTAssertTrue(items[1].isSeparatorItem)
-        XCTAssertEqual(items[2].title, String(localized: "format.device_options"))
-        XCTAssertEqual(items[3].title, String(localized: "device.refresh"))
-        XCTAssertTrue(items[4].isSeparatorItem)
-        XCTAssertEqual(items[5].title, String(localized: "view.original_input"))
-        XCTAssertEqual(items[5].state, .off)
-        XCTAssertEqual(items[6].title, String(localized: "view.fit_to_window"))
-        XCTAssertEqual(items[6].state, .on)
-        XCTAssertEqual(items[7].action, #selector(NSWindow.toggleFullScreen(_:)))
+        XCTAssertEqual(items[2].title, String(localized: "device.none"))
+        XCTAssertTrue(items[3].isSeparatorItem)
+        XCTAssertEqual(items[4].title, String(localized: "format.device_options"))
+        XCTAssertEqual(items[5].title, String(localized: "device.refresh"))
+        XCTAssertTrue(items[6].isSeparatorItem)
+        XCTAssertEqual(items[7].title, String(localized: "view.original_input"))
+        XCTAssertEqual(items[8].title, String(localized: "view.fit_to_window"))
         assertNoImages(in: controller.menu)
+    }
+
+    func testStatusBarMenuSelectionPersistsAndMarksOnlyOneItemPerGroup() throws {
+        let suiteName = "HIDMIStatusBarMenuTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let model = AppModel(startsVideoInputSetup: false, userDefaults: defaults)
+        model.setStatusBarDetailMode(.iconOnly)
+        model.setStatusBarVisibility(.windowOnly)
+
+        let reloadedModel = AppModel(startsVideoInputSetup: false, userDefaults: defaults)
+        XCTAssertEqual(reloadedModel.statusBarDetailMode, .iconOnly)
+        XCTAssertEqual(reloadedModel.statusBarVisibility, .windowOnly)
+
+        let controller = VideoMenuController()
+        controller.bind(model: reloadedModel)
+        controller.rebuildMenu()
+        let statusSubmenu = try XCTUnwrap(controller.menu.items.first?.submenu)
+        XCTAssertEqual(statusSubmenu.items[0].state, .on)
+        XCTAssertEqual(statusSubmenu.items[1].state, .off)
+        XCTAssertEqual(statusSubmenu.items[3].state, .off)
+        XCTAssertEqual(statusSubmenu.items[4].state, .on)
+        XCTAssertEqual(statusSubmenu.items[5].state, .off)
+        XCTAssertEqual(statusSubmenu.items[6].state, .off)
+    }
+
+    func testCaptureStatusBarMapsUnavailableChooseAndShowingStates() {
+        let unavailable = AppModel.captureStatusBarItem(
+            state: .noDevice,
+            hasCaptureDevices: false,
+            selectedDeviceName: nil,
+            formatDescription: nil,
+            inputSize: nil
+        )
+        XCTAssertEqual(unavailable.signal, .red)
+        XCTAssertEqual(unavailable.symbolName, "video")
+        XCTAssertEqual(unavailable.title, String(localized: "status.capture.unavailable"))
+
+        let choose = AppModel.captureStatusBarItem(
+            state: .idle,
+            hasCaptureDevices: true,
+            selectedDeviceName: nil,
+            formatDescription: nil,
+            inputSize: nil
+        )
+        XCTAssertEqual(choose.signal, .yellow)
+        XCTAssertEqual(choose.title, String(localized: "status.capture.choose"))
+
+        let showing = AppModel.captureStatusBarItem(
+            state: .running,
+            hasCaptureDevices: true,
+            selectedDeviceName: "USB Capture",
+            formatDescription: "3840x2160 @ 60 fps NV12",
+            inputSize: CGSize(width: 3840, height: 2160)
+        )
+        XCTAssertEqual(showing.signal, .green)
+        XCTAssertEqual(showing.title, String(localized: "status.capture.showing"))
+        XCTAssertEqual(
+            showing.detail,
+            String(
+                format: String(localized: "status.capture.detail"),
+                "USB Capture",
+                "3840x2160 @ 60 fps NV12"
+            )
+        )
+    }
+
+    func testKVMStatusBarMapsNotFoundAvailableConnectedAndFailure() async {
+        let worker = FakeHIDMIWorker()
+        let hidmi = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt()
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+
+        XCTAssertEqual(model.statusBarSnapshot.kvm.signal, .red)
+        XCTAssertEqual(model.statusBarSnapshot.kvm.symbolName, "command")
+        XCTAssertEqual(model.statusBarSnapshot.kvm.title, String(localized: "status.kvm.not_found"))
+
+        let ethernetDevice = makeDevice(
+            id: "device-eth",
+            host: "192.168.1.9",
+            name: "Desk KVM",
+            transport: .ethernet,
+            requiresAuth: false
+        )
+        hidmi.mergeDiscoveredDevices([ethernetDevice], seenAt: Date())
+        XCTAssertEqual(model.statusBarSnapshot.kvm.signal, .yellow)
+        XCTAssertEqual(model.statusBarSnapshot.kvm.symbolName, "command")
+
+        let wlanDevice = makeDevice(
+            id: "device-wlan",
+            host: "192.168.1.10",
+            name: "Desk KVM",
+            transport: .wlan,
+            requiresAuth: false
+        )
+        hidmi.mergeDiscoveredDevices([wlanDevice, ethernetDevice], seenAt: Date())
+        XCTAssertEqual(model.statusBarSnapshot.kvm.signal, .yellow)
+        XCTAssertEqual(model.makeStatusSelectorSnapshot().kvmDevices.first(where: { $0.id == wlanDevice.discoveryID })?.symbolName, "wifi")
+        XCTAssertEqual(model.makeStatusSelectorSnapshot().kvmDevices.first(where: { $0.id == ethernetDevice.discoveryID })?.symbolName, "cable.connector")
+        XCTAssertEqual(model.statusBarSnapshot.kvm.title, String(localized: "status.kvm.available"))
+
+        await worker.setAcceptedToken("", device: wlanDevice)
+        model.connectHIDMI(wlanDevice.discoveryID)
+        await waitUntil { hidmi.isConnected }
+        XCTAssertEqual(model.statusBarSnapshot.kvm.signal, .green)
+        XCTAssertEqual(model.statusBarSnapshot.kvm.symbolName, "wifi")
+        XCTAssertEqual(model.statusBarSnapshot.kvm.title, String(localized: "status.kvm.connected"))
+        model.disconnectHIDMI()
+        XCTAssertEqual(model.statusBarSnapshot.kvm.signal, .yellow)
+        XCTAssertEqual(model.statusBarSnapshot.kvm.symbolName, "command")
+
+        let failedHIDMI = HIDMIController(
+            worker: FakeHIDMIWorker(),
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: FakeTokenPrompt(),
+            warningPresenter: FakeConnectionWarningPresenter()
+        )
+        let failedModel = AppModel(
+            hidmi: failedHIDMI,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+        let unavailableDevice = makeDevice(
+            id: "device-unavailable",
+            host: "192.168.1.11",
+            availability: .hidUnavailable
+        )
+        failedHIDMI.mergeDiscoveredDevices([unavailableDevice], seenAt: Date())
+        failedModel.connectHIDMI(unavailableDevice.discoveryID)
+        XCTAssertEqual(failedModel.statusBarSnapshot.kvm.signal, .blinkingRed)
+        XCTAssertEqual(failedModel.statusBarSnapshot.kvm.symbolName, "command")
+        XCTAssertEqual(failedModel.statusBarSnapshot.kvm.title, String(localized: "status.kvm.failed"))
     }
 
     func testViewMenuMarksOriginalInputAndFitToWindowModes() {
         let model = AppModel(startsVideoInputSetup: false)
-        let controller = ViewMenuController()
+        let controller = VideoMenuController()
         controller.bind(model: model)
 
         controller.rebuildMenu()
-        XCTAssertEqual(controller.menu.items[5].state, .off)
-        XCTAssertEqual(controller.menu.items[6].state, .on)
+        XCTAssertEqual(controller.menu.items[7].state, .off)
+        XCTAssertEqual(controller.menu.items[8].state, .on)
 
         model.updateActualVideoFrame(CaptureFrameDescriptor(
             dimensions: VideoDimensions(width: 3840, height: 2160),
             pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ))
         model.showOriginalInput()
+        model.applyCurrentMenuSnapshot()
         controller.rebuildMenu()
-        XCTAssertEqual(controller.menu.items[5].state, .on)
-        XCTAssertEqual(controller.menu.items[6].state, .off)
+        XCTAssertEqual(controller.menu.items[7].state, .on)
+        XCTAssertEqual(controller.menu.items[8].state, .off)
 
         model.fitToWindow()
+        model.applyCurrentMenuSnapshot()
         controller.rebuildMenu()
-        XCTAssertEqual(controller.menu.items[5].state, .off)
-        XCTAssertEqual(controller.menu.items[6].state, .on)
+        XCTAssertEqual(controller.menu.items[7].state, .off)
+        XCTAssertEqual(controller.menu.items[8].state, .on)
     }
 
     func testUSBMenuDetailsUseDevicePathOrDeviceID() {
@@ -2162,7 +2967,7 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertEqual(HIDMIDiscoveredDevice(device: device, lastSeen: Date()).menuDetails().first?.title, String(localized: "hid.device.wlan_device"))
     }
 
-    func testMultipleInterfaceDiscoversMergeByDiscoveryID() {
+    func testMultipleInterfaceDiscoversWithSameDeviceIDRemainSeparate() {
         let controller = HIDMIController(
             worker: FakeHIDMIWorker(),
             tokenStore: FakeTokenStore(),
@@ -2173,8 +2978,9 @@ final class HIDMIControllerTests: XCTestCase {
 
         controller.mergeDiscoveredDevices([ethernet, wlan], seenAt: Date())
 
-        XCTAssertEqual(controller.discoveredDevices.count, 1)
-        XCTAssertEqual(controller.discoveredDevices.first?.id, "device-a")
+        XCTAssertEqual(controller.discoveredDevices.count, 2)
+        XCTAssertEqual(Set(controller.discoveredDevices.map(\.id)), Set([ethernet.discoveryID, wlan.discoveryID]))
+        XCTAssertNotEqual(ethernet.discoveryID, wlan.discoveryID)
     }
 
     func testInvalidSessionPortThrowsRecoverableError() {
@@ -2538,6 +3344,54 @@ private func makeCaptureFormat(
     )
 }
 
+private func makeCaptureFormatItem(
+    id: String,
+    width: Int32,
+    height: Int32,
+    maxFrameRate: Double,
+    mediaSubType: FourCharCode,
+    isSelected: Bool = false
+) -> AppMenuCaptureFormatItem {
+    let format = makeCaptureFormat(
+        id: id,
+        width: width,
+        height: height,
+        maxFrameRate: maxFrameRate,
+        mediaSubType: mediaSubType
+    )
+    return AppMenuCaptureFormatItem(
+        id: format.id,
+        title: format.menuTitle,
+        dimensions: format.dimensions,
+        frameRateMillis: format.frameRateMillis,
+        mediaSubType: format.mediaSubType,
+        resolutionTitle: format.resolutionTitle,
+        frameRateTitle: format.frameRateTitle,
+        colorFormatTitle: format.colorFormatTitle,
+        isSelected: isSelected
+    )
+}
+
+private func makeStatusSelectorSnapshot(
+    usesAutomaticCaptureFormat: Bool = true,
+    captureFormats: [AppMenuCaptureFormatItem]
+) -> StatusSelectorSnapshot {
+    StatusSelectorSnapshot(
+        statusBar: StatusSelectorSnapshot.empty.statusBar,
+        statusBarDetailMode: .detailed,
+        captureDevices: [],
+        isCaptureDeviceOptionsEnabled: true,
+        usesAutomaticCaptureFormat: usesAutomaticCaptureFormat,
+        captureFormats: captureFormats,
+        kvmDevices: [],
+        isHIDMIDiscovering: false,
+        isHIDMIConnecting: false,
+        connectingHIDMIDeviceID: nil,
+        kvmEndpointErrors: [:],
+        isHIDMIConnected: false
+    )
+}
+
 private func fourCC(_ value: String) -> FourCharCode {
     let bytes = Array(value.utf8.prefix(4))
     return bytes.reduce(FourCharCode(0)) { result, byte in
@@ -2570,6 +3424,8 @@ private final class FakeCameraPermissionManager: CameraPermissionManaging {
         openSettingsCount += 1
     }
 }
+
+private final class PreservingMenuDelegate: NSObject, NSMenuDelegate {}
 
 private final class FakeHIDMIReportSink: @unchecked Sendable {
     private let lock = NSLock()
@@ -2743,6 +3599,9 @@ private actor FakeHIDMIWorker: HIDMIWorkerProtocol {
     private var pingFailures = [Error]()
     private var pingCalls = 0
     private var connectFailure: Error?
+    private var connectFailuresByDeviceID = [String: Error]()
+    private var connectDeviceIDs = [String]()
+    private var connectDelay: TimeInterval = 0
     private var discoveryError: Error?
     private var discoveryResults = [[HIDMIDevice]]()
     private var discoverBroadcastCalls = 0
@@ -2767,6 +3626,14 @@ private actor FakeHIDMIWorker: HIDMIWorkerProtocol {
         connectFailure = error
     }
 
+    func setConnectError(_ error: Error?, for deviceID: HIDMIDiscoveredDevice.ID) {
+        connectFailuresByDeviceID[deviceID] = error
+    }
+
+    func setConnectDelay(_ delay: TimeInterval) {
+        connectDelay = delay
+    }
+
     func setSendReportsDelay(_ delay: TimeInterval) {
         reportSink.setDelay(delay)
     }
@@ -2785,6 +3652,10 @@ private actor FakeHIDMIWorker: HIDMIWorkerProtocol {
 
     func connectAttempts() -> [String] {
         attempts
+    }
+
+    func connectDeviceAttempts() -> [String] {
+        connectDeviceIDs
     }
 
     func discoverBroadcastCallCount() -> Int {
@@ -2852,13 +3723,20 @@ private actor FakeHIDMIWorker: HIDMIWorkerProtocol {
 
     func connect(device: HIDMIDevice, token: String, timeout: TimeInterval, establishedIOTimeout: TimeInterval) async throws -> HIDMIWorkerConnection {
         attempts.append(token)
+        connectDeviceIDs.append(device.discoveryID)
         connectionGeneration &+= 1
+        if connectDelay > 0 {
+            try? await Task.sleep(for: .seconds(connectDelay))
+        }
+        if let connectFailure = connectFailuresByDeviceID[device.discoveryID] {
+            throw connectFailure
+        }
         if let connectFailure {
             throw connectFailure
         }
-        if let device = acceptedTokens[token] {
+        if let acceptedDevice = acceptedTokens[token] {
             return HIDMIWorkerConnection(
-                device: device,
+                device: device.withCapabilities(acceptedDevice.capabilities),
                 generation: connectionGeneration,
                 mouseWriter: FakeHIDMIMouseReportWriter(sink: reportSink),
                 keyboardWriter: keyboardWriter

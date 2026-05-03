@@ -23,13 +23,29 @@ struct CaptureFormat: Identifiable, Equatable, Sendable {
     let maxFrameRate: Double
     let mediaSubType: FourCharCode
 
-    var menuTitle: String {
+    var resolutionTitle: String {
+        "\(dimensions.width)x\(dimensions.height)"
+    }
+
+    var frameRateMillis: Int {
+        Int((maxFrameRate * 1_000).rounded())
+    }
+
+    var frameRateTitle: String {
         let fps = maxFrameRate.rounded(.toNearestOrAwayFromZero)
         let fpsText = abs(maxFrameRate - fps) < 0.01
             ? String(Int(fps))
             : String(format: "%.2f", maxFrameRate)
 
-        return "\(dimensions.width)x\(dimensions.height) @ \(fpsText) fps \(fourCCString(mediaSubType))"
+        return "\(fpsText) fps"
+    }
+
+    var colorFormatTitle: String {
+        fourCCString(mediaSubType)
+    }
+
+    var menuTitle: String {
+        "\(resolutionTitle) @ \(frameRateTitle) \(colorFormatTitle)"
     }
 }
 

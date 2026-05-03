@@ -268,7 +268,8 @@ final class HIDMIController: ObservableObject {
     @Published private(set) var discoveredDevices: [HIDMIDiscoveredDevice] = []
     @Published private(set) var selectedDeviceID: HIDMIDiscoveredDevice.ID?
     @Published private(set) var connectedDeviceID: HIDMIDiscoveredDevice.ID?
-    @Published private(set) var inputDiagnostics = HIDMIInputDiagnostics()
+    @Published private(set) var endpointConnectionFailuresByDeviceID = [HIDMIDiscoveredDevice.ID: String]()
+    private(set) var inputDiagnostics = HIDMIInputDiagnostics()
 
     var onConnectionLost: (() -> Void)?
 
@@ -339,6 +340,13 @@ final class HIDMIController: ObservableObject {
         connectedDeviceID != nil
     }
 
+    var connectingDeviceID: HIDMIDiscoveredDevice.ID? {
+        if case .connecting = status {
+            return selectedDeviceID
+        }
+        return nil
+    }
+
     var isDiscovering: Bool {
         if case .discovering = status {
             return true
@@ -394,7 +402,10 @@ final class HIDMIController: ObservableObject {
         }
     }
 
-    func refreshDiscoveredDevices(source: HIDMIDiscoveryRefreshSource = .manual) {
+    func refreshDiscoveredDevices(
+        source: HIDMIDiscoveryRefreshSource = .manual,
+        completion: (@MainActor @Sendable () -> Void)? = nil
+    ) {
         if let discoveryRefreshTask {
             guard source == .manual && discoveryRefreshSource != .manual else { return }
             discoveryRefreshTask.cancel()
@@ -420,6 +431,7 @@ final class HIDMIController: ObservableObject {
                         self.setStatus(.disconnected)
                     }
                     self.clearDiscoveryRefresh(generation: generation)
+                    completion?()
                 }
             } catch {
                 await MainActor.run {
@@ -429,19 +441,21 @@ final class HIDMIController: ObservableObject {
                         self.setFailure(error.localizedDescription, clearSelection: false)
                     }
                     self.clearDiscoveryRefresh(generation: generation)
+                    completion?()
                 }
             }
         }
     }
 
-    func connect(to id: HIDMIDiscoveredDevice.ID) {
+    func connect(to id: HIDMIDiscoveredDevice.ID, presentFailureWarning: Bool = true) {
         guard let device = discoveredDevices.first(where: { $0.id == id }) else { return }
         guard device.isConnectable else {
             selectedDeviceID = id
             let message = device.availability.userFacingConnectionDescription
+            endpointConnectionFailuresByDeviceID[id] = message
             let kind = device.availability.connectionFailureKind
             setFailure(message, clearSelection: false)
-            if kind != .busy && shouldPresentWarning(deviceID: device.id, kind: kind, operation: .connect) {
+            if presentFailureWarning, kind != .busy, shouldPresentWarning(deviceID: device.id, kind: kind, operation: .connect) {
                 warningPresenter.showConnectionFailure(device: device, message: message)
             }
             return
@@ -450,6 +464,7 @@ final class HIDMIController: ObservableObject {
         connectionAttemptID += 1
         let attemptID = connectionAttemptID
         selectedDeviceID = id
+        endpointConnectionFailuresByDeviceID[id] = nil
         connectionTask?.cancel()
         let hadActiveConnection = connectedDeviceID != nil
         stopKeepalive()
@@ -465,9 +480,22 @@ final class HIDMIController: ObservableObject {
                 attemptID: attemptID,
                 disconnectExistingSession: hadActiveConnection,
                 allowTokenPrompt: true,
-                presentFailureWarning: true
+                presentFailureWarning: presentFailureWarning
             )
         }
+    }
+
+    func cancelConnectionAttempt() {
+        guard connectingDeviceID != nil else { return }
+        connectionAttemptID += 1
+        connectionTask?.cancel()
+        connectionTask = nil
+        activeConnectionGeneration = nil
+        activeMouseWriter = nil
+        activeKeyboardWriter = nil
+        connectedDeviceID = nil
+        usesAbsolutePointer = false
+        setStatus(.disconnected)
     }
 
     func disconnect() {
@@ -866,6 +894,7 @@ final class HIDMIController: ObservableObject {
         mergeDiscoveredDevices([device], seenAt: now())
         selectedDeviceID = discovered.id
         connectedDeviceID = discovered.id
+        endpointConnectionFailuresByDeviceID[discovered.id] = nil
         activeConnectionGeneration = connection.generation
         activeMouseWriter = connection.mouseWriter
         activeKeyboardWriter = connection.keyboardWriter
@@ -919,6 +948,7 @@ final class HIDMIController: ObservableObject {
         presentWarning: Bool
     ) {
         let message = connectionMessage(for: error, operation: .connect)
+        endpointConnectionFailuresByDeviceID[device.id] = message
         setFailure(message, clearSelection: clearSelection)
         let kind = connectionFailureKind(for: error)
         if kind == .busy && presentWarning {
@@ -977,7 +1007,7 @@ final class HIDMIController: ObservableObject {
 
     private func recordSuccessfulConnectionOperation() {
         keepaliveFailureCount = 0
-        if isConnected {
+        if isConnected, lastError != nil {
             lastError = nil
         }
     }
@@ -998,6 +1028,9 @@ final class HIDMIController: ObservableObject {
         }
         setStatus(.failed(message))
         if hadConnection {
+            if let lostDevice {
+                endpointConnectionFailuresByDeviceID[lostDevice.id] = message
+            }
             let keyDeviceID = lostDevice?.id ?? "unknown"
             if shouldPresentWarning(deviceID: keyDeviceID, kind: connectionFailureKind(forMessage: message), operation: .keepalive) {
                 warningPresenter.showConnectionLost(device: lostDevice, message: message)

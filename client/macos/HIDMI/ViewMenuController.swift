@@ -1,17 +1,11 @@
 import AppKit
-import Combine
 
 @MainActor
-final class ViewMenuController: NSObject, NSMenuDelegate {
-    private let menuIdentifier = NSUserInterfaceItemIdentifier("HIDMI.ViewMenu")
+final class VideoMenuController: NSObject, NSMenuDelegate {
+    private let menuIdentifier = NSUserInterfaceItemIdentifier("HIDMI.VideoMenu")
     private weak var model: AppModel?
-    private var cancellable: AnyCancellable?
-    private var pendingTopLevelRepair: DispatchWorkItem?
     private var menuItem: NSMenuItem?
-    private var maintainsTopLevelMenu = false
-    private var needsMenuRebuild = true
-    private var isMenuTracking = false
-    let menu = NSMenu(title: String(localized: "menu.view"))
+    let menu = NSMenu(title: String(localized: "menu.video"))
 
     override init() {
         menu.autoenablesItems = false
@@ -20,51 +14,29 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
 
     func bind(model: AppModel) {
         self.model = model
-        cancellable = Publishers.Merge(model.objectWillChange, model.hidmi.objectWillChange)
-            .sink { [weak self] _ in
-                self?.markMenuNeedsRebuild()
-                self?.scheduleTopLevelRepair()
-            }
     }
 
     func installOrUpdate() {
-        maintainsTopLevelMenu = true
-        guard ensureInstalled() else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.installOrUpdate()
-            }
-            return
-        }
-        rebuildMenu()
+        guard let mainMenu = NSApp.mainMenu else { return }
+        ensureTopLevelInstalled(in: mainMenu)
     }
 
     func repairTopLevelInstallation() {
-        guard !isMenuTracking else { return }
-        _ = ensureInstalled()
+        installOrUpdate()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        rebuildMenuIfNeeded()
+        guard menu === self.menu else { return }
+        rebuildMenu()
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        pendingTopLevelRepair?.cancel()
-        isMenuTracking = true
-        model?.beginMenuTracking()
-    }
-
-    func menuDidClose(_ menu: NSMenu) {
-        isMenuTracking = false
-        model?.endMenuTracking()
-    }
-
-    func install(in mainMenu: NSMenu) {
+    func ensureTopLevelInstalled(in mainMenu: NSMenu) {
         let item: NSMenuItem
-        if let viewIndex = existingViewMenuIndex(in: mainMenu),
-           let existingItem = mainMenu.item(at: viewIndex) {
+        if let videoIndex = existingVideoMenuIndex(in: mainMenu),
+           let existingItem = mainMenu.item(at: videoIndex) {
             item = existingItem
         } else {
-            item = NSMenuItem(title: String(localized: "menu.view"), action: nil, keyEquivalent: "")
+            item = NSMenuItem(title: String(localized: "menu.video"), action: nil, keyEquivalent: "")
             mainMenu.insertItem(item, at: insertionIndex(in: mainMenu))
         }
 
@@ -72,7 +44,7 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
             menuItem?.submenu = nil
         }
 
-        item.title = String(localized: "menu.view")
+        item.title = String(localized: "menu.video")
         item.action = nil
         item.keyEquivalent = ""
         item.identifier = menuIdentifier
@@ -81,109 +53,77 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
         menuItem = item
     }
 
-    @discardableResult
-    private func ensureInstalled() -> Bool {
-        guard maintainsTopLevelMenu else {
-            return false
-        }
-        guard let mainMenu = NSApp.mainMenu else {
-            return false
-        }
-
-        if menuItem?.menu !== mainMenu || menuItem?.submenu !== menu {
-            install(in: mainMenu)
-        } else if !mainMenu.items.contains(where: { $0.identifier == menuIdentifier }) {
-            install(in: mainMenu)
-        }
-
-        let title = String(localized: "menu.view")
-        if menuItem?.title != title {
-            menuItem?.title = title
-        }
-        if menu.title != title {
-            menu.title = title
-        }
-        return true
-    }
-
     func rebuildMenu() {
         guard let model else { return }
-        needsMenuRebuild = false
+        let snapshot = model.menuState.snapshot
         menu.removeAllItems()
 
-        addVideoDeviceItems(model: model)
+        menu.addItem(statusBarItem(snapshot: snapshot))
         menu.addItem(.separator())
-        menu.addItem(deviceOptionsItem(model: model))
+        addVideoDeviceItems(snapshot: snapshot)
+        menu.addItem(.separator())
+        menu.addItem(deviceOptionsItem(snapshot: snapshot))
         menu.addItem(refreshDevicesItem())
         menu.addItem(.separator())
-        menu.addItem(originalInputItem(model: model))
-        menu.addItem(fitToWindowItem(model: model))
-        menu.addItem(fullScreenItem())
+        menu.addItem(originalInputItem(snapshot: snapshot))
+        menu.addItem(fitToWindowItem(snapshot: snapshot))
         clearImages(in: menu)
     }
 
-    private func markMenuNeedsRebuild() {
-        needsMenuRebuild = true
-    }
-
-    private func scheduleTopLevelRepair() {
-        guard maintainsTopLevelMenu else { return }
-        pendingTopLevelRepair?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.repairTopLevelInstallation()
-        }
-        pendingTopLevelRepair = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
-    }
-
-    private func rebuildMenuIfNeeded() {
-        guard needsMenuRebuild else { return }
-        rebuildMenu()
-    }
-
-    private func existingViewMenuIndex(in mainMenu: NSMenu) -> Int? {
-        let titles = [String(localized: "menu.view"), "View", "显示", "画面"]
+    private func existingVideoMenuIndex(in mainMenu: NSMenu) -> Int? {
+        let titles = [String(localized: "menu.video"), "Video", "画面"]
         return mainMenu.items.firstIndex { item in
             item.identifier == menuIdentifier || titles.contains(item.title)
         }
     }
 
     private func insertionIndex(in mainMenu: NSMenu) -> Int {
-        let editTitles = ["Edit", "编辑"]
-        if let editIndex = mainMenu.items.firstIndex(where: { editTitles.contains($0.title) }) {
-            return min(editIndex + 1, mainMenu.items.count)
+        let viewTitles = [String(localized: "menu.view"), "View", "显示"]
+        if let viewIndex = mainMenu.items.firstIndex(where: { viewTitles.contains($0.title) }) {
+            return min(viewIndex + 1, mainMenu.items.count)
         }
+
         let windowTitles = [String(localized: "menu.window"), "Window", "窗口"]
         if let windowIndex = mainMenu.items.firstIndex(where: { windowTitles.contains($0.title) }) {
             return windowIndex
         }
-        return min(3, mainMenu.items.count)
+
+        let helpTitles = ["Help", "帮助"]
+        if let helpIndex = mainMenu.items.firstIndex(where: { helpTitles.contains($0.title) }) {
+            return helpIndex
+        }
+
+        let editTitles = ["Edit", "编辑"]
+        if let editIndex = mainMenu.items.firstIndex(where: { editTitles.contains($0.title) }) {
+            return min(editIndex + 1, mainMenu.items.count)
+        }
+        return min(4, mainMenu.items.count)
     }
 
-    private func addVideoDeviceItems(model: AppModel) {
-        if model.devices.isEmpty {
+    private func addVideoDeviceItems(snapshot: AppMenuSnapshot) {
+        if snapshot.captureDevices.isEmpty {
             let item = NSMenuItem(title: String(localized: "device.none"), action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
             return
         }
 
-        for device in model.devices {
+        for device in snapshot.captureDevices {
             let item = NSMenuItem(
-                title: device.name,
+                title: device.title,
                 action: #selector(selectVideoDevice(_:)),
                 keyEquivalent: ""
             )
             item.target = self
             item.representedObject = device.id
-            item.state = model.selectedDeviceID == device.id ? .on : .off
+            item.state = device.isSelected ? .on : .off
             menu.addItem(item)
         }
     }
 
-    private func deviceOptionsItem(model: AppModel) -> NSMenuItem {
+    private func deviceOptionsItem(snapshot: AppMenuSnapshot) -> NSMenuItem {
         let item = NSMenuItem(title: String(localized: "format.device_options"), action: nil, keyEquivalent: "")
-        item.isEnabled = model.selectedDeviceID != nil
+        item.isEnabled = snapshot.isCaptureDeviceOptionsEnabled
 
         let submenu = NSMenu(title: String(localized: "format.device_options"))
         let automatic = NSMenuItem(
@@ -192,25 +132,25 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         automatic.target = self
-        automatic.state = model.usesAutomaticFormat ? .on : .off
-        automatic.isEnabled = model.selectedDeviceID != nil
+        automatic.state = snapshot.usesAutomaticCaptureFormat ? .on : .off
+        automatic.isEnabled = snapshot.isCaptureDeviceOptionsEnabled
         submenu.addItem(automatic)
 
         submenu.addItem(.separator())
-        if model.currentFormats.isEmpty {
+        if snapshot.captureFormats.isEmpty {
             let empty = NSMenuItem(title: String(localized: "format.none"), action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
         } else {
-            for format in model.currentFormats {
+            for format in snapshot.captureFormats {
                 let formatItem = NSMenuItem(
-                    title: format.menuTitle,
+                    title: format.title,
                     action: #selector(selectFormat(_:)),
                     keyEquivalent: ""
                 )
                 formatItem.target = self
                 formatItem.representedObject = format.id
-                formatItem.state = !model.usesAutomaticFormat && model.selectedFormatID == format.id ? .on : .off
+                formatItem.state = format.isSelected ? .on : .off
                 submenu.addItem(formatItem)
             }
         }
@@ -230,7 +170,82 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
         return item
     }
 
-    private func originalInputItem(model: AppModel) -> NSMenuItem {
+    private func statusBarItem(snapshot: AppMenuSnapshot) -> NSMenuItem {
+        let item = NSMenuItem(title: String(localized: "view.status_bar"), action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: String(localized: "view.status_bar"))
+        submenu.autoenablesItems = false
+
+        submenu.addItem(statusBarDetailItem(
+            title: String(localized: "status_bar.icons_only"),
+            mode: .iconOnly,
+            snapshot: snapshot
+        ))
+        submenu.addItem(statusBarDetailItem(
+            title: String(localized: "status_bar.detailed"),
+            mode: .detailed,
+            snapshot: snapshot
+        ))
+
+        submenu.addItem(.separator())
+
+        submenu.addItem(statusBarVisibilityItem(
+            title: String(localized: "status_bar.hidden"),
+            visibility: .hidden,
+            snapshot: snapshot
+        ))
+        submenu.addItem(statusBarVisibilityItem(
+            title: String(localized: "status_bar.window_only"),
+            visibility: .windowOnly,
+            snapshot: snapshot
+        ))
+        submenu.addItem(statusBarVisibilityItem(
+            title: String(localized: "status_bar.full_screen_only"),
+            visibility: .fullScreenOnly,
+            snapshot: snapshot
+        ))
+        submenu.addItem(statusBarVisibilityItem(
+            title: String(localized: "status_bar.always_show"),
+            visibility: .always,
+            snapshot: snapshot
+        ))
+
+        item.submenu = submenu
+        return item
+    }
+
+    private func statusBarDetailItem(
+        title: String,
+        mode: StatusBarDetailMode,
+        snapshot: AppMenuSnapshot
+    ) -> NSMenuItem {
+        let item = NSMenuItem(
+            title: title,
+            action: #selector(selectStatusBarDetailMode(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.representedObject = mode.rawValue
+        item.state = snapshot.statusBarDetailMode == mode ? .on : .off
+        return item
+    }
+
+    private func statusBarVisibilityItem(
+        title: String,
+        visibility: StatusBarVisibility,
+        snapshot: AppMenuSnapshot
+    ) -> NSMenuItem {
+        let item = NSMenuItem(
+            title: title,
+            action: #selector(selectStatusBarVisibility(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.representedObject = visibility.rawValue
+        item.state = snapshot.statusBarVisibility == visibility ? .on : .off
+        return item
+    }
+
+    private func originalInputItem(snapshot: AppMenuSnapshot) -> NSMenuItem {
         let item = NSMenuItem(
             title: String(localized: "view.original_input"),
             action: #selector(showOriginalInput(_:)),
@@ -238,12 +253,12 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
         )
         item.keyEquivalentModifierMask = [.command]
         item.target = self
-        item.isEnabled = model.inputSize != nil
-        item.state = model.isOriginalInputMode ? .on : .off
+        item.isEnabled = snapshot.canShowOriginalInput
+        item.state = snapshot.isOriginalInputMode ? .on : .off
         return item
     }
 
-    private func fitToWindowItem(model: AppModel) -> NSMenuItem {
+    private func fitToWindowItem(snapshot: AppMenuSnapshot) -> NSMenuItem {
         let item = NSMenuItem(
             title: String(localized: "view.fit_to_window"),
             action: #selector(fitToWindow(_:)),
@@ -251,47 +266,53 @@ final class ViewMenuController: NSObject, NSMenuDelegate {
         )
         item.keyEquivalentModifierMask = [.command]
         item.target = self
-        item.state = model.isFitToWindowMode ? .on : .off
-        return item
-    }
-
-    func fullScreenItem() -> NSMenuItem {
-        let isFullScreen = NSApp.keyWindow?.styleMask.contains(.fullScreen) == true
-        let item = NSMenuItem(
-            title: String(localized: isFullScreen ? "view.exit_full_screen" : "view.enter_full_screen"),
-            action: #selector(NSWindow.toggleFullScreen(_:)),
-            keyEquivalent: "f"
-        )
-        item.keyEquivalentModifierMask = [.control, .command]
-        item.target = nil
-        item.image = nil
+        item.state = snapshot.isFitToWindowMode ? .on : .off
         return item
     }
 
     @objc private func selectVideoDevice(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? CaptureDevice.ID else { return }
         model?.selectDevice(id)
+        model?.applyCurrentMenuSnapshotWhenSafe()
     }
 
     @objc private func selectAutomaticFormat(_ sender: NSMenuItem) {
         model?.selectAutomaticFormat()
+        model?.applyCurrentMenuSnapshotWhenSafe()
     }
 
     @objc private func selectFormat(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? CaptureFormat.ID else { return }
         model?.selectFormat(id)
+        model?.applyCurrentMenuSnapshotWhenSafe()
     }
 
     @objc private func refreshDevices(_ sender: NSMenuItem) {
-        model?.refreshDevices()
+        model?.refreshCaptureMenuDevices()
+    }
+
+    @objc private func selectStatusBarDetailMode(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = StatusBarDetailMode(rawValue: rawValue) else { return }
+        model?.setStatusBarDetailMode(mode)
+        model?.applyCurrentMenuSnapshotWhenSafe()
+    }
+
+    @objc private func selectStatusBarVisibility(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let visibility = StatusBarVisibility(rawValue: rawValue) else { return }
+        model?.setStatusBarVisibility(visibility)
+        model?.applyCurrentMenuSnapshotWhenSafe()
     }
 
     @objc private func showOriginalInput(_ sender: NSMenuItem) {
         model?.showOriginalInput()
+        model?.applyCurrentMenuSnapshotWhenSafe()
     }
 
     @objc private func fitToWindow(_ sender: NSMenuItem) {
         model?.fitToWindow()
+        model?.applyCurrentMenuSnapshotWhenSafe()
     }
 
     private func clearImages(in menu: NSMenu) {

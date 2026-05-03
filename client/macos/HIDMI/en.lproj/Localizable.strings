@@ -2,7 +2,9 @@
 "menu.formats" = "Formats";
 "menu.hid" = "HID";
 "menu.view" = "View";
+"menu.video" = "Video";
 "menu.window" = "Window";
+"menu.help" = "Help";
 
 "device.none" = "No video input found";
 "device.refresh" = "Refresh Devices";
@@ -10,11 +12,45 @@
 "format.device_options" = "Device Options";
 "format.auto_best" = "Automatic Best";
 "format.none" = "No formats available";
+"format.resolution" = "Resolution";
+"format.refresh_rate" = "Refresh Rate";
+"format.color_format" = "Color Format";
 
 "view.original_input" = "Original Input";
 "view.fit_to_window" = "Fit to Window";
-"view.enter_full_screen" = "Enter Full Screen";
-"view.exit_full_screen" = "Exit Full Screen";
+"view.status_bar" = "Status Bar";
+
+"status_bar.icons_only" = "Icons Only";
+"status_bar.detailed" = "Detailed";
+"status_bar.hidden" = "Hidden";
+"status_bar.window_only" = "Window Only";
+"status_bar.full_screen_only" = "Full Screen Only";
+"status_bar.always_show" = "Always Show";
+
+"status.capture.unavailable" = "Video unavailable";
+"status.capture.choose" = "Choose capture card";
+"status.capture.showing" = "Showing";
+"status.capture.configuring" = "Configuring";
+"status.capture.dimensions" = "%dx%d";
+"status.capture.detail" = "Video: %@ · %@";
+"status.capture.detail_device_only" = "Video: %@";
+
+"status.kvm.not_found" = "No KVM found";
+"status.kvm.available" = "KVM available";
+"status.kvm.connected" = "KVM connected";
+"status.kvm.failed" = "KVM connection failed";
+"status.kvm.detail" = "KVM: %@ · %@";
+
+"selector.capture.title" = "Video Input";
+"selector.capture.devices" = "Capture Cards";
+"selector.capture.formats" = "Format";
+"selector.kvm.title" = "KVM";
+"selector.kvm.devices" = "KVM Devices";
+"selector.kvm.connected" = "Connected";
+"selector.kvm.connecting" = "Connecting, click to cancel";
+"selector.close" = "Close";
+"selector.drawer.open" = "Open status drawer";
+"selector.drawer.close" = "Close status drawer";
 
 "hidmi.status.disconnected" = "HIDMI KVM disconnected";
 "hidmi.status.discovering" = "Looking for HIDMI KVM devices…";
@@ -32,6 +68,8 @@
 "hid.device.display_name" = "HIDMI KVM Device";
 "hid.device.none" = "No HIDMI KVM device found";
 "hid.device.connect_this_device" = "Connect This Device";
+"hid.device.cancel_connection" = "Cancel Connection";
+"hid.device.retry_connection" = "Retry Connection";
 "hid.device.disconnect_this_device" = "Disconnect This Device";
 "hid.device.eth_device" = "Local Network Device";
 "hid.device.wlan_device" = "Wi-Fi Network Device";
@@ -55,7 +93,7 @@
 "hid.connection.warning.lost_message" = "%@ disconnected unexpectedly.\n\n%@";
 "hid.connection.warning.unknown_device" = "HIDMI KVM device";
 
-"overlay.preparing_input" = "Choose a video input from the View menu";
+"overlay.preparing_input" = "Choose a video input from the status area";
 "overlay.requesting_permission" = "Requesting camera permission…";
 "overlay.permission_denied" = "Allow camera access in System Settings";
 "overlay.permission_restricted" = "Camera access is restricted";
@@ -82,6 +120,8 @@
 "error.invalid_port" = "Invalid %@: %d";
 "error.response_too_large" = "Server response is too large";
 "error.device_response_timeout" = "Device response timed out";
+"error.network_unreachable" = "Network is unreachable";
+"error.connection_refused" = "Device refused the connection";
 "error.server_busy" = "Server is busy; retrying";
 "error.hid_unavailable" = "The controlled device HID interface is unavailable";
 "error.auth_rate_limited" = "Too many failed token attempts; retry later";

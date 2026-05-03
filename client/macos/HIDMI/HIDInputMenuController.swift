@@ -1,16 +1,10 @@
 import AppKit
-import Combine
 
 @MainActor
 final class HIDInputMenuController: NSObject, NSMenuDelegate {
     private let menuIdentifier = NSUserInterfaceItemIdentifier("HIDMI.HIDInputMenu")
     private weak var model: AppModel?
-    private var cancellable: AnyCancellable?
-    private var pendingTopLevelRepair: DispatchWorkItem?
     private var menuItem: NSMenuItem?
-    private var maintainsTopLevelMenu = false
-    private var needsMenuRebuild = true
-    private var isMenuTracking = false
     let menu = NSMenu(title: String(localized: "menu.hid"))
 
     override init() {
@@ -20,46 +14,23 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
 
     func bind(model: AppModel) {
         self.model = model
-        cancellable = Publishers.Merge(model.objectWillChange, model.hidmi.objectWillChange)
-            .sink { [weak self] _ in
-                self?.markMenuNeedsRebuild()
-                self?.scheduleTopLevelRepair()
-            }
     }
 
     func installOrUpdate() {
-        maintainsTopLevelMenu = true
-        guard ensureInstalled() else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.installOrUpdate()
-            }
-            return
-        }
-        rebuildMenu()
+        guard let mainMenu = NSApp.mainMenu else { return }
+        ensureTopLevelInstalled(in: mainMenu)
     }
 
     func repairTopLevelInstallation() {
-        guard !isMenuTracking else { return }
-        _ = ensureInstalled()
+        installOrUpdate()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        model?.startHIDMIDiscovery()
-        rebuildMenuIfNeeded()
+        guard menu === self.menu else { return }
+        rebuildMenu()
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        pendingTopLevelRepair?.cancel()
-        isMenuTracking = true
-        model?.beginMenuTracking()
-    }
-
-    func menuDidClose(_ menu: NSMenu) {
-        isMenuTracking = false
-        model?.endMenuTracking()
-    }
-
-    private func install(in mainMenu: NSMenu) {
+    func ensureTopLevelInstalled(in mainMenu: NSMenu) {
         let item: NSMenuItem
         if let existingIndex = existingInputMenuIndex(in: mainMenu),
            let existingItem = mainMenu.item(at: existingIndex) {
@@ -82,66 +53,28 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
         menuItem = item
     }
 
-    @discardableResult
-    private func ensureInstalled() -> Bool {
-        guard maintainsTopLevelMenu else {
-            return false
-        }
-        guard let mainMenu = NSApp.mainMenu else {
-            return false
-        }
-
-        if menuItem?.menu !== mainMenu || menuItem?.submenu !== menu {
-            install(in: mainMenu)
-        } else if !mainMenu.items.contains(where: { $0.identifier == menuIdentifier }) {
-            install(in: mainMenu)
-        }
-
-        let title = String(localized: "menu.hid")
-        if menuItem?.title != title {
-            menuItem?.title = title
-        }
-        if menu.title != title {
-            menu.title = title
-        }
-        return true
-    }
-
-    private func markMenuNeedsRebuild() {
-        needsMenuRebuild = true
-    }
-
-    private func scheduleTopLevelRepair() {
-        guard maintainsTopLevelMenu else { return }
-        pendingTopLevelRepair?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.repairTopLevelInstallation()
-        }
-        pendingTopLevelRepair = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
-    }
-
-    private func rebuildMenuIfNeeded() {
-        guard needsMenuRebuild else { return }
-        rebuildMenu()
-    }
-
     private func insertionIndex(in mainMenu: NSMenu) -> Int {
-        let helpTitles = ["Help", "帮助"]
-        if let helpIndex = mainMenu.items.firstIndex(where: { helpTitles.contains($0.title) }) {
-            return min(helpIndex + 1, mainMenu.items.count)
+        let videoTitles = [String(localized: "menu.video"), "Video", "画面"]
+        if let videoIndex = mainMenu.items.firstIndex(where: {
+            $0.identifier == NSUserInterfaceItemIdentifier("HIDMI.VideoMenu") || videoTitles.contains($0.title)
+        }) {
+            return min(videoIndex + 1, mainMenu.items.count)
         }
 
         let windowTitles = [String(localized: "menu.window"), "Window", "窗口"]
-        if let windowIndex = mainMenu.items.lastIndex(where: { windowTitles.contains($0.title) }) {
-            return min(windowIndex + 1, mainMenu.items.count)
+        if let windowIndex = mainMenu.items.firstIndex(where: { windowTitles.contains($0.title) }) {
+            return windowIndex
         }
 
-        let viewTitles = [String(localized: "menu.view"), "View", "显示", "画面"]
-        if let viewIndex = mainMenu.items.firstIndex(where: { viewTitles.contains($0.title) }) {
-            return min(viewIndex + 1, mainMenu.items.count)
+        let helpTitles = ["Help", "帮助"]
+        if let helpIndex = mainMenu.items.firstIndex(where: { helpTitles.contains($0.title) }) {
+            return helpIndex
         }
 
+        let editTitles = ["Edit", "编辑"]
+        if let editIndex = mainMenu.items.firstIndex(where: { editTitles.contains($0.title) }) {
+            return min(editIndex + 1, mainMenu.items.count)
+        }
         return min(4, mainMenu.items.count)
     }
 
@@ -154,17 +87,16 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
 
     func rebuildMenu() {
         guard let model else { return }
-        needsMenuRebuild = false
+        let snapshot = model.menuState.snapshot
         menu.removeAllItems()
 
-        let deviceStates = model.hidmi.menuDeviceStates
-        if deviceStates.isEmpty {
+        if snapshot.inputDevices.isEmpty {
             let item = NSMenuItem(title: String(localized: "hid.device.none"), action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         } else {
-            for state in deviceStates {
-                menu.addItem(deviceMenuItem(for: state, model: model))
+            for device in snapshot.inputDevices {
+                menu.addItem(deviceMenuItem(for: device))
             }
         }
 
@@ -175,7 +107,7 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         refresh.target = self
-        refresh.isEnabled = !model.hidmi.isDiscovering
+        refresh.isEnabled = true
         menu.addItem(refresh)
 
         menu.addItem(.separator())
@@ -185,7 +117,7 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         releaseAll.target = self
-        releaseAll.isEnabled = model.hidmi.isConnected
+        releaseAll.isEnabled = snapshot.isHIDMIConnected
         menu.addItem(releaseAll)
 
         let ctrlAltDel = NSMenuItem(
@@ -194,7 +126,7 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         ctrlAltDel.target = self
-        ctrlAltDel.isEnabled = model.hidmi.isConnected
+        ctrlAltDel.isEnabled = snapshot.isHIDMIConnected
         menu.addItem(ctrlAltDel)
 
         menu.addItem(.separator())
@@ -207,26 +139,23 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
         menu.addItem(tokenManagement)
     }
 
-    private func deviceMenuItem(for state: HIDMIMenuDeviceState, model: AppModel) -> NSMenuItem {
-        let item = NSMenuItem(title: state.device.menuTitle, action: nil, keyEquivalent: "")
-        item.state = state.marker.menuItemState
+    private func deviceMenuItem(for device: AppMenuInputDeviceItem) -> NSMenuItem {
+        let item = NSMenuItem(title: device.title, action: nil, keyEquivalent: "")
+        item.state = device.marker.menuItemState
 
-        let submenu = NSMenu(title: state.device.menuTitle)
-        let actionTitle = state.marker == .connected
-            ? String(localized: "hid.device.disconnect_this_device")
-            : String(localized: "hid.device.connect_this_device")
+        let submenu = NSMenu(title: device.title)
         let action = NSMenuItem(
-            title: actionTitle,
-            action: state.marker == .connected ? #selector(disconnectDevice(_:)) : #selector(connectDevice(_:)),
+            title: device.actionTitle,
+            action: device.marker == .connected ? #selector(disconnectDevice(_:)) : #selector(connectDevice(_:)),
             keyEquivalent: ""
         )
         action.target = self
-        action.representedObject = state.id
-        action.isEnabled = state.marker == .connected || (!model.hidmi.status.isConnecting && state.device.isConnectable)
+        action.representedObject = device.id
+        action.isEnabled = device.isActionEnabled
         submenu.addItem(action)
 
         submenu.addItem(.separator())
-        for detail in state.menuDetails {
+        for detail in device.details {
             let detailItem = NSMenuItem(title: detail.title, action: nil, keyEquivalent: "")
             detailItem.isEnabled = false
             submenu.addItem(detailItem)
@@ -240,19 +169,22 @@ final class HIDInputMenuController: NSObject, NSMenuDelegate {
         guard let id = sender.representedObject as? HIDMIDiscoveredDevice.ID else { return }
         DispatchQueue.main.async { [weak self] in
             self?.model?.connectHIDMI(id)
+            self?.model?.applyCurrentMenuSnapshotWhenSafe()
         }
     }
 
     @objc private func disconnectDevice(_ sender: NSMenuItem) {
         model?.disconnectHIDMI()
+        model?.applyCurrentMenuSnapshotWhenSafe()
     }
 
     @objc private func refreshDevices(_ sender: NSMenuItem) {
-        model?.refreshHIDMIDevices()
+        model?.refreshHIDMIMenuDevices()
     }
 
     @objc private func releaseAll(_ sender: NSMenuItem) {
         model?.releaseRemoteInput()
+        model?.applyCurrentMenuSnapshotWhenSafe()
     }
 
     @objc private func sendCtrlAltDel(_ sender: NSMenuItem) {
@@ -276,14 +208,5 @@ extension HIDMIMenuSelectionMarker {
         case .available:
             return .off
         }
-    }
-}
-
-private extension HIDMIController.Status {
-    var isConnecting: Bool {
-        if case .connecting = self {
-            return true
-        }
-        return false
     }
 }

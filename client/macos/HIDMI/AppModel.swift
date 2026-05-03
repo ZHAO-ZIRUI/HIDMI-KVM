@@ -33,6 +33,364 @@ enum CaptureStreamChangePolicy {
     }
 }
 
+enum StatusBarDetailMode: String, CaseIterable, Equatable {
+    case iconOnly
+    case detailed
+}
+
+enum StatusBarVisibility: String, CaseIterable, Equatable {
+    case hidden
+    case windowOnly
+    case fullScreenOnly
+    case always
+
+    func isVisible(isFullScreen: Bool) -> Bool {
+        switch self {
+        case .hidden:
+            return false
+        case .windowOnly:
+            return !isFullScreen
+        case .fullScreenOnly:
+            return isFullScreen
+        case .always:
+            return true
+        }
+    }
+}
+
+enum StatusBarSignal: Equatable {
+    case red
+    case yellow
+    case green
+    case blinkingRed
+}
+
+struct HIDMIStatusBarItem: Equatable {
+    let signal: StatusBarSignal
+    let symbolName: String
+    let title: String
+    let detail: String?
+}
+
+struct HIDMIStatusBarSnapshot: Equatable {
+    let capture: HIDMIStatusBarItem
+    let kvm: HIDMIStatusBarItem
+}
+
+struct AppMenuCaptureDeviceItem: Identifiable, Equatable {
+    let id: CaptureDevice.ID
+    let title: String
+    let isSelected: Bool
+}
+
+struct AppMenuCaptureFormatItem: Identifiable, Equatable {
+    let id: CaptureFormat.ID
+    let title: String
+    let dimensions: VideoDimensions
+    let frameRateMillis: Int
+    let mediaSubType: FourCharCode
+    let resolutionTitle: String
+    let frameRateTitle: String
+    let colorFormatTitle: String
+    let isSelected: Bool
+}
+
+struct AppMenuInputDeviceItem: Identifiable, Equatable {
+    let id: HIDMIDiscoveredDevice.ID
+    let title: String
+    let marker: HIDMIMenuSelectionMarker
+    let actionTitle: String
+    let isActionEnabled: Bool
+    let details: [HIDMIMenuDeviceDetail]
+}
+
+enum StatusSelectorKVMConnectionState: Equatable {
+    case available
+    case connecting
+    case connected
+    case failed(String)
+    case unavailable(String)
+}
+
+struct StatusSelectorKVMDeviceItem: Identifiable, Equatable {
+    let id: HIDMIDiscoveredDevice.ID
+    let title: String
+    let marker: HIDMIMenuSelectionMarker
+    let actionTitle: String
+    let isActionEnabled: Bool
+    let details: [HIDMIMenuDeviceDetail]
+    let symbolName: String
+    let connectionState: StatusSelectorKVMConnectionState
+}
+
+struct StatusSelectorSnapshot: Equatable {
+    let statusBar: HIDMIStatusBarSnapshot
+    let statusBarDetailMode: StatusBarDetailMode
+    let captureDevices: [AppMenuCaptureDeviceItem]
+    let isCaptureDeviceOptionsEnabled: Bool
+    let usesAutomaticCaptureFormat: Bool
+    let captureFormats: [AppMenuCaptureFormatItem]
+    let kvmDevices: [StatusSelectorKVMDeviceItem]
+    let isHIDMIDiscovering: Bool
+    let isHIDMIConnecting: Bool
+    let connectingHIDMIDeviceID: HIDMIDiscoveredDevice.ID?
+    let kvmEndpointErrors: [HIDMIDiscoveredDevice.ID: String]
+    let isHIDMIConnected: Bool
+
+    static var empty: StatusSelectorSnapshot {
+        StatusSelectorSnapshot(
+            statusBar: HIDMIStatusBarSnapshot(
+                capture: HIDMIStatusBarItem(
+                    signal: .red,
+                    symbolName: "video",
+                    title: String(localized: "status.capture.unavailable"),
+                    detail: nil
+                ),
+                kvm: HIDMIStatusBarItem(
+                    signal: .red,
+                    symbolName: "command",
+                    title: String(localized: "status.kvm.not_found"),
+                    detail: nil
+                )
+            ),
+            statusBarDetailMode: .detailed,
+            captureDevices: [],
+            isCaptureDeviceOptionsEnabled: false,
+            usesAutomaticCaptureFormat: true,
+            captureFormats: [],
+            kvmDevices: [],
+            isHIDMIDiscovering: false,
+            isHIDMIConnecting: false,
+            connectingHIDMIDeviceID: nil,
+            kvmEndpointErrors: [:],
+            isHIDMIConnected: false
+        )
+    }
+}
+
+struct StatusSelectorCaptureResolutionOption: Identifiable, Equatable {
+    let id: String
+    let dimensions: VideoDimensions
+    let title: String
+}
+
+struct StatusSelectorCaptureFrameRateOption: Identifiable, Equatable {
+    let id: String
+    let frameRateMillis: Int
+    let title: String
+}
+
+struct StatusSelectorCaptureColorFormatOption: Identifiable, Equatable {
+    let id: String
+    let mediaSubType: FourCharCode
+    let title: String
+}
+
+enum StatusSelectorCaptureFormatChoices {
+    static func effectiveFormat(in snapshot: StatusSelectorSnapshot) -> AppMenuCaptureFormatItem? {
+        snapshot.captureFormats.first(where: \.isSelected) ?? snapshot.captureFormats.first
+    }
+
+    static func resolutionOptions(in formats: [AppMenuCaptureFormatItem]) -> [StatusSelectorCaptureResolutionOption] {
+        var seen = Set<String>()
+        return formats.compactMap { format in
+            let id = "\(format.dimensions.width)x\(format.dimensions.height)"
+            guard seen.insert(id).inserted else { return nil }
+            return StatusSelectorCaptureResolutionOption(
+                id: id,
+                dimensions: format.dimensions,
+                title: format.resolutionTitle
+            )
+        }
+    }
+
+    static func frameRateOptions(
+        in formats: [AppMenuCaptureFormatItem],
+        resolution: VideoDimensions?
+    ) -> [StatusSelectorCaptureFrameRateOption] {
+        var seen = Set<Int>()
+        return formats
+            .filter { format in
+                guard let resolution else { return true }
+                return format.dimensions == resolution
+            }
+            .compactMap { format in
+                guard seen.insert(format.frameRateMillis).inserted else { return nil }
+                return StatusSelectorCaptureFrameRateOption(
+                    id: "\(format.frameRateMillis)",
+                    frameRateMillis: format.frameRateMillis,
+                    title: format.frameRateTitle
+                )
+            }
+    }
+
+    static func colorFormatOptions(
+        in formats: [AppMenuCaptureFormatItem],
+        resolution: VideoDimensions?,
+        frameRateMillis: Int?
+    ) -> [StatusSelectorCaptureColorFormatOption] {
+        var seen = Set<FourCharCode>()
+        return formats
+            .filter { format in
+                if let resolution, format.dimensions != resolution {
+                    return false
+                }
+                if let frameRateMillis, format.frameRateMillis != frameRateMillis {
+                    return false
+                }
+                return true
+            }
+            .compactMap { format in
+                guard seen.insert(format.mediaSubType).inserted else { return nil }
+                return StatusSelectorCaptureColorFormatOption(
+                    id: "\(format.mediaSubType)",
+                    mediaSubType: format.mediaSubType,
+                    title: format.colorFormatTitle
+                )
+            }
+    }
+
+    static func formatID(
+        selectingResolution dimensions: VideoDimensions,
+        in snapshot: StatusSelectorSnapshot
+    ) -> CaptureFormat.ID? {
+        let current = effectiveFormat(in: snapshot)
+        let candidates = snapshot.captureFormats.filter { $0.dimensions == dimensions }
+        return bestFormatID(
+            from: candidates,
+            preferredFrameRateMillis: current?.frameRateMillis,
+            preferredMediaSubType: current?.mediaSubType
+        )
+    }
+
+    static func formatID(
+        selectingFrameRateMillis frameRateMillis: Int,
+        in snapshot: StatusSelectorSnapshot
+    ) -> CaptureFormat.ID? {
+        let current = effectiveFormat(in: snapshot)
+        let resolutionCandidates = snapshot.captureFormats.filter { format in
+            guard let dimensions = current?.dimensions else { return true }
+            return format.dimensions == dimensions
+        }
+        let candidates = resolutionCandidates.filter { $0.frameRateMillis == frameRateMillis }
+        let fallbackCandidates = snapshot.captureFormats.filter { $0.frameRateMillis == frameRateMillis }
+        return bestFormatID(
+            from: candidates.isEmpty ? fallbackCandidates : candidates,
+            preferredFrameRateMillis: frameRateMillis,
+            preferredMediaSubType: current?.mediaSubType
+        )
+    }
+
+    static func formatID(
+        selectingColorFormat mediaSubType: FourCharCode,
+        in snapshot: StatusSelectorSnapshot
+    ) -> CaptureFormat.ID? {
+        let current = effectiveFormat(in: snapshot)
+        let exactScope = snapshot.captureFormats.filter { format in
+            if let dimensions = current?.dimensions, format.dimensions != dimensions {
+                return false
+            }
+            if let frameRateMillis = current?.frameRateMillis, format.frameRateMillis != frameRateMillis {
+                return false
+            }
+            return format.mediaSubType == mediaSubType
+        }
+        let resolutionScope = snapshot.captureFormats.filter { format in
+            guard let dimensions = current?.dimensions else { return false }
+            return format.dimensions == dimensions && format.mediaSubType == mediaSubType
+        }
+        let fallbackScope = snapshot.captureFormats.filter { $0.mediaSubType == mediaSubType }
+        return bestFormatID(
+            from: exactScope.isEmpty ? (resolutionScope.isEmpty ? fallbackScope : resolutionScope) : exactScope,
+            preferredFrameRateMillis: current?.frameRateMillis,
+            preferredMediaSubType: mediaSubType
+        )
+    }
+
+    private static func bestFormatID(
+        from candidates: [AppMenuCaptureFormatItem],
+        preferredFrameRateMillis: Int?,
+        preferredMediaSubType: FourCharCode?
+    ) -> CaptureFormat.ID? {
+        guard !candidates.isEmpty else { return nil }
+        if let preferredFrameRateMillis,
+           let preferredMediaSubType,
+           let exact = candidates.first(where: {
+               $0.frameRateMillis == preferredFrameRateMillis && $0.mediaSubType == preferredMediaSubType
+           }) {
+            return exact.id
+        }
+        if let preferredFrameRateMillis,
+           let frameRateMatch = candidates.first(where: { $0.frameRateMillis == preferredFrameRateMillis }) {
+            return frameRateMatch.id
+        }
+        if let preferredMediaSubType,
+           let colorMatch = candidates.first(where: { $0.mediaSubType == preferredMediaSubType }) {
+            return colorMatch.id
+        }
+        return candidates.first?.id
+    }
+}
+
+struct AppMenuSnapshot: Equatable {
+    let statusBarDetailMode: StatusBarDetailMode
+    let statusBarVisibility: StatusBarVisibility
+    let canShowOriginalInput: Bool
+    let isOriginalInputMode: Bool
+    let isFitToWindowMode: Bool
+    let captureDevices: [AppMenuCaptureDeviceItem]
+    let isCaptureDeviceOptionsEnabled: Bool
+    let usesAutomaticCaptureFormat: Bool
+    let captureFormats: [AppMenuCaptureFormatItem]
+    let inputDevices: [AppMenuInputDeviceItem]
+    let isHIDMIDiscovering: Bool
+    let isHIDMIConnected: Bool
+
+    static let empty = AppMenuSnapshot(
+        statusBarDetailMode: .detailed,
+        statusBarVisibility: .always,
+        canShowOriginalInput: false,
+        isOriginalInputMode: false,
+        isFitToWindowMode: true,
+        captureDevices: [],
+        isCaptureDeviceOptionsEnabled: false,
+        usesAutomaticCaptureFormat: true,
+        captureFormats: [],
+        inputDevices: [],
+        isHIDMIDiscovering: false,
+        isHIDMIConnected: false
+    )
+}
+
+@MainActor
+final class AppMenuState {
+    private(set) var appliedSnapshot: AppMenuSnapshot
+    private(set) var pendingSnapshot: AppMenuSnapshot
+
+    init(snapshot: AppMenuSnapshot = .empty) {
+        appliedSnapshot = snapshot
+        pendingSnapshot = snapshot
+    }
+
+    var snapshot: AppMenuSnapshot {
+        appliedSnapshot
+    }
+
+    func stage(_ nextSnapshot: AppMenuSnapshot) {
+        pendingSnapshot = nextSnapshot
+    }
+
+    func applyPendingSnapshot() {
+        guard appliedSnapshot != pendingSnapshot else { return }
+        appliedSnapshot = pendingSnapshot
+    }
+
+    func replaceImmediately(_ nextSnapshot: AppMenuSnapshot) {
+        pendingSnapshot = nextSnapshot
+        appliedSnapshot = nextSnapshot
+    }
+}
+
 final class SystemCameraPermissionManager: CameraPermissionManaging {
     func authorizationStatus() -> CameraPermissionStatus {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -65,38 +423,6 @@ final class SystemCameraPermissionManager: CameraPermissionManaging {
                 return
             }
         }
-    }
-}
-
-private final class AppMenuTrackingDelegate: NSObject, NSMenuDelegate {
-    weak var model: AppModel?
-    weak var previous: NSMenuDelegate?
-
-    func menuWillOpen(_ menu: NSMenu) {
-        previous?.menuWillOpen?(menu)
-        Task { @MainActor [weak self] in
-            self?.model?.installMenuTrackingDelegatesNow()
-            self?.model?.beginMenuTracking()
-        }
-    }
-
-    func menuDidClose(_ menu: NSMenu) {
-        previous?.menuDidClose?(menu)
-        Task { @MainActor [weak self] in
-            self?.model?.endMenuTracking()
-        }
-    }
-
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        previous?.menuNeedsUpdate?(menu)
-    }
-
-    func numberOfItems(in menu: NSMenu) -> Int {
-        previous?.numberOfItems?(in: menu) ?? menu.numberOfItems
-    }
-
-    func menu(_ menu: NSMenu, update item: NSMenuItem, at index: Int, shouldCancel: Bool) -> Bool {
-        previous?.menu?(menu, update: item, at: index, shouldCancel: shouldCancel) ?? true
     }
 }
 
@@ -172,15 +498,16 @@ final class AppModel: ObservableObject {
     private let authenticator: DeviceOwnerAuthenticating
     private let tokenManagementWindowController: TokenManagementWindowController
     private let cameraPermissionManager: CameraPermissionManaging
+    private let userDefaults: UserDefaults
     private let startsVideoInputSetup: Bool
     private let frameStabilizationInterval: TimeInterval
     private let formatSwitchConfirmationInterval: TimeInterval
     private let captureReconfigurationDebounceInterval: TimeInterval
     private let cameraPermissionRequestTimeoutInterval: TimeInterval
     let hidmi: HIDMIController
+    let menuState = AppMenuState()
     private var cancellables = Set<AnyCancellable>()
     private var windowStateCancellables = Set<AnyCancellable>()
-    private var menuTrackingDelegates = [ObjectIdentifier: AppMenuTrackingDelegate]()
     private weak var observedWindow: NSWindow?
     private var remoteInput = RemoteInputMapper()
     private var didStart = false
@@ -196,15 +523,99 @@ final class AppModel: ObservableObject {
     private var cameraPermissionRequestGeneration: UInt64 = 0
     private var isCaptureRecoveryDirty = false
     private var menuTrackingDepth = 0
+    private var selectorInteractionDepth = 0
     private var hasDeferredObjectWillChangeDuringMenuTracking = false
+    private var hasDeferredMenuSnapshotApplyDuringTracking = false
 
-    @Published private var state: ViewerState = .idle
-    @Published private var previewMode: PreviewMode = .fit
-    @Published private(set) var inputSize: CGSize?
-    @Published private(set) var tokenUnlockError: String?
-    @Published private(set) var frameReportGeneration: UInt64 = 0
-    @Published private(set) var isRemoteInputSuspendedByMenu = false
-    @Published private(set) var isMainWindowFullScreen = false
+    private var stateStorage: ViewerState = .idle
+    private var previewModeStorage: PreviewMode = .fit
+    private var inputSizeStorage: CGSize?
+    private var tokenUnlockErrorStorage: String?
+    private var frameReportGenerationStorage: UInt64 = 0
+    private var isMainWindowFullScreenStorage = false
+    private var statusBarDetailModeStorage: StatusBarDetailMode
+    private var statusBarVisibilityStorage: StatusBarVisibility
+
+    private var state: ViewerState {
+        get { stateStorage }
+        set {
+            guard stateStorage != newValue else { return }
+            emitObjectWillChangeRespectingMenuTracking()
+            stateStorage = newValue
+            stageMenuSnapshot()
+        }
+    }
+
+    private var previewMode: PreviewMode {
+        get { previewModeStorage }
+        set {
+            guard previewModeStorage != newValue else { return }
+            emitObjectWillChangeRespectingMenuTracking()
+            previewModeStorage = newValue
+            stageMenuSnapshot()
+        }
+    }
+
+    private(set) var inputSize: CGSize? {
+        get { inputSizeStorage }
+        set {
+            guard inputSizeStorage != newValue else { return }
+            emitObjectWillChangeRespectingMenuTracking()
+            inputSizeStorage = newValue
+            stageMenuSnapshot()
+        }
+    }
+
+    private(set) var tokenUnlockError: String? {
+        get { tokenUnlockErrorStorage }
+        set {
+            guard tokenUnlockErrorStorage != newValue else { return }
+            emitObjectWillChangeRespectingMenuTracking()
+            tokenUnlockErrorStorage = newValue
+        }
+    }
+
+    private(set) var frameReportGeneration: UInt64 {
+        get { frameReportGenerationStorage }
+        set {
+            guard frameReportGenerationStorage != newValue else { return }
+            emitObjectWillChangeRespectingMenuTracking()
+            frameReportGenerationStorage = newValue
+        }
+    }
+
+    private(set) var isMainWindowFullScreen: Bool {
+        get { isMainWindowFullScreenStorage }
+        set {
+            guard isMainWindowFullScreenStorage != newValue else { return }
+            emitObjectWillChangeRespectingMenuTracking()
+            isMainWindowFullScreenStorage = newValue
+        }
+    }
+
+    private(set) var statusBarDetailMode: StatusBarDetailMode {
+        get { statusBarDetailModeStorage }
+        set {
+            guard statusBarDetailModeStorage != newValue else { return }
+            emitObjectWillChangeRespectingMenuTracking()
+            statusBarDetailModeStorage = newValue
+            stageMenuSnapshot()
+        }
+    }
+
+    private(set) var statusBarVisibility: StatusBarVisibility {
+        get { statusBarVisibilityStorage }
+        set {
+            guard statusBarVisibilityStorage != newValue else { return }
+            emitObjectWillChangeRespectingMenuTracking()
+            statusBarVisibilityStorage = newValue
+            stageMenuSnapshot()
+        }
+    }
+    private(set) var isRemoteInputSuspendedByMenu = false
+
+    private static let statusBarDetailModeDefaultsKey = "StatusBarDetailMode"
+    private static let statusBarVisibilityDefaultsKey = "StatusBarVisibility"
 
     static func makeForCurrentEnvironment() -> AppModel {
         #if DEBUG
@@ -256,6 +667,23 @@ final class AppModel: ObservableObject {
         PreviewLayout.topReservedHeight(isFullScreen: isMainWindowFullScreen)
     }
 
+    var isStatusBarVisible: Bool {
+        statusBarVisibility.isVisible(isFullScreen: isMainWindowFullScreen)
+    }
+
+    var statusBarSnapshot: HIDMIStatusBarSnapshot {
+        HIDMIStatusBarSnapshot(
+            capture: Self.captureStatusBarItem(
+                state: state,
+                hasCaptureDevices: !devices.isEmpty,
+                selectedDeviceName: deviceStore.selectedDevice?.name,
+                formatDescription: selectedCaptureFormatDescription,
+                inputSize: inputSize
+            ),
+            kvm: kvmStatusBarItem()
+        )
+    }
+
     var overlayMessage: String? {
         switch state {
         case .idle:
@@ -291,21 +719,26 @@ final class AppModel: ObservableObject {
         frameStabilizationInterval: TimeInterval = 0.25,
         formatSwitchConfirmationInterval: TimeInterval = 1.0,
         captureReconfigurationDebounceInterval: TimeInterval = 0.3,
-        cameraPermissionRequestTimeoutInterval: TimeInterval = 5.0
+        cameraPermissionRequestTimeoutInterval: TimeInterval = 5.0,
+        userDefaults: UserDefaults = .standard
     ) {
         self.tokenStore = tokenStore
         self.authenticator = authenticator
         self.hidmi = hidmi ?? HIDMIController(tokenStore: tokenStore)
         self.tokenManagementWindowController = tokenManagementWindowController ?? TokenManagementWindowController(tokenStore: tokenStore)
         self.cameraPermissionManager = cameraPermissionManager
+        self.userDefaults = userDefaults
         self.startsVideoInputSetup = startsVideoInputSetup
         self.frameStabilizationInterval = frameStabilizationInterval
         self.formatSwitchConfirmationInterval = formatSwitchConfirmationInterval
         self.captureReconfigurationDebounceInterval = captureReconfigurationDebounceInterval
         self.cameraPermissionRequestTimeoutInterval = cameraPermissionRequestTimeoutInterval
+        statusBarDetailModeStorage = Self.loadStatusBarDetailMode(from: userDefaults)
+        statusBarVisibilityStorage = Self.loadStatusBarVisibility(from: userDefaults)
         deviceStore.objectWillChange
             .sink { [weak self] _ in
                 self?.emitObjectWillChangeRespectingMenuTracking()
+                self?.scheduleMenuSnapshotUpdate()
             }
             .store(in: &cancellables)
 
@@ -319,21 +752,10 @@ final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)
-            .sink { [weak self] _ in
-                self?.beginMenuTracking()
-            }
-            .store(in: &cancellables)
-
-        NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)
-            .sink { [weak self] _ in
-                self?.endMenuTracking()
-            }
-            .store(in: &cancellables)
-
         self.hidmi.objectWillChange
             .sink { [weak self] _ in
                 self?.emitObjectWillChangeRespectingMenuTracking()
+                self?.scheduleMenuSnapshotUpdate()
             }
             .store(in: &cancellables)
 
@@ -342,12 +764,12 @@ final class AppModel: ObservableObject {
         }
 
         installCaptureSessionObservers()
+        replaceMenuSnapshotImmediately()
     }
 
     func start() {
         guard !didStart else { return }
         didStart = true
-        installMenuTrackingDelegates()
         tokenStore.migrateLegacyTokensIfNeeded()
         hidmi.startDiscovery()
         guard startsVideoInputSetup else {
@@ -362,7 +784,6 @@ final class AppModel: ObservableObject {
     func attach(window: NSWindow) {
         windowController.attach(window)
         observeWindowStateIfNeeded(window)
-        installMenuTrackingDelegates()
     }
 
     func refreshDevices() {
@@ -389,6 +810,18 @@ final class AppModel: ObservableObject {
             stopPreview()
             state = .failed(String(localized: "overlay.unknown_permission"))
         }
+    }
+
+    func refreshCaptureMenuDevices() {
+        refreshDevices()
+        applyCurrentMenuSnapshotWhenSafe()
+    }
+
+    func refreshCaptureSelectorDevices(
+        completion: (@MainActor @Sendable (StatusSelectorSnapshot) -> Void)? = nil
+    ) {
+        refreshDevices()
+        completion?(makeStatusSelectorSnapshot())
     }
 
     func selectDevice(_ id: CaptureDevice.ID) {
@@ -425,6 +858,18 @@ final class AppModel: ObservableObject {
 
     func fitToWindow() {
         previewMode = .fit
+    }
+
+    func setStatusBarDetailMode(_ mode: StatusBarDetailMode) {
+        guard statusBarDetailMode != mode else { return }
+        statusBarDetailMode = mode
+        userDefaults.set(mode.rawValue, forKey: Self.statusBarDetailModeDefaultsKey)
+    }
+
+    func setStatusBarVisibility(_ visibility: StatusBarVisibility) {
+        guard statusBarVisibility != visibility else { return }
+        statusBarVisibility = visibility
+        userDefaults.set(visibility.rawValue, forKey: Self.statusBarVisibilityDefaultsKey)
     }
 
     func showOriginalInput() {
@@ -483,19 +928,38 @@ final class AppModel: ObservableObject {
         hidmi.startDiscovery()
     }
 
-    func refreshHIDMIDevices() {
+    func refreshHIDMIDevices(completion: (@MainActor @Sendable () -> Void)? = nil) {
         hidmi.startDiscovery()
-        hidmi.refreshDiscoveredDevices(source: .manual)
+        hidmi.refreshDiscoveredDevices(source: .manual, completion: completion)
     }
 
-    func connectHIDMI(_ id: HIDMIDiscoveredDevice.ID) {
+    func refreshHIDMIMenuDevices() {
+        refreshHIDMIDevices { [weak self] in
+            self?.applyCurrentMenuSnapshotWhenSafe()
+        }
+    }
+
+    func refreshHIDMISelectorDevices(
+        completion: (@MainActor @Sendable (StatusSelectorSnapshot) -> Void)? = nil
+    ) {
+        refreshHIDMIDevices { [weak self] in
+            guard let self else { return }
+            completion?(self.makeStatusSelectorSnapshot())
+        }
+    }
+
+    func connectHIDMI(_ id: HIDMIDiscoveredDevice.ID, presentFailureWarning: Bool = false) {
         remoteInput = RemoteInputMapper()
-        hidmi.connect(to: id)
+        hidmi.connect(to: id, presentFailureWarning: presentFailureWarning)
     }
 
     func disconnectHIDMI() {
         releaseRemoteInput()
         hidmi.disconnect()
+    }
+
+    func cancelHIDMIConnectionAttempt() {
+        hidmi.cancelConnectionAttempt()
     }
 
     func releaseRemoteInput() {
@@ -512,9 +976,9 @@ final class AppModel: ObservableObject {
         hidmi.sendCtrlAltDel()
     }
 
-    func beginMenuTracking() {
+    func beginMenuTracking(suspendsRemoteInput: Bool = true) {
         menuTrackingDepth += 1
-        guard !isRemoteInputSuspendedByMenu else { return }
+        guard suspendsRemoteInput, !isRemoteInputSuspendedByMenu else { return }
         resetRemoteInputLocally()
         hidmi.releaseAllBestEffort(timeout: 0.3)
         isRemoteInputSuspendedByMenu = true
@@ -523,51 +987,122 @@ final class AppModel: ObservableObject {
     func endMenuTracking() {
         menuTrackingDepth = max(0, menuTrackingDepth - 1)
         guard menuTrackingDepth == 0 else { return }
+        let shouldApplyDeferredMenuSnapshot = hasDeferredMenuSnapshotApplyDuringTracking
+        hasDeferredMenuSnapshotApplyDuringTracking = false
+        let shouldEmitDeferredObjectWillChange = hasDeferredObjectWillChangeDuringMenuTracking
         hasDeferredObjectWillChangeDuringMenuTracking = false
+        if selectorInteractionDepth == 0 {
+            isRemoteInputSuspendedByMenu = false
+        }
+        if shouldApplyDeferredMenuSnapshot {
+            DispatchQueue.main.async { [weak self] in
+                self?.applyPendingMenuSnapshotWhenSafe()
+            }
+        }
+        if shouldEmitDeferredObjectWillChange {
+            DispatchQueue.main.async { [weak self] in
+                self?.objectWillChange.send()
+            }
+        }
+    }
+
+    func beginSelectorInteraction() {
+        selectorInteractionDepth += 1
+        guard !isRemoteInputSuspendedByMenu else { return }
+        resetRemoteInputLocally()
+        hidmi.releaseAllBestEffort(timeout: 0.3)
+        isRemoteInputSuspendedByMenu = true
+    }
+
+    func endSelectorInteraction() {
+        selectorInteractionDepth = max(0, selectorInteractionDepth - 1)
+        guard selectorInteractionDepth == 0, menuTrackingDepth == 0 else { return }
         isRemoteInputSuspendedByMenu = false
     }
 
-    private func installMenuTrackingDelegates() {
-        DispatchQueue.main.async { [weak self] in
-            self?.installMenuTrackingDelegatesNow()
-        }
+    func stageCurrentMenuSnapshot() {
+        menuState.stage(makeMenuSnapshot())
     }
 
-    fileprivate func installMenuTrackingDelegatesNow() {
-        guard let mainMenu = NSApp.mainMenu else { return }
-        for item in mainMenu.items where shouldTrackTopLevelMenu(item) {
-            installMenuTrackingDelegate(in: item.submenu)
+    func applyPendingMenuSnapshotWhenSafe() {
+        guard menuTrackingDepth == 0 else {
+            hasDeferredMenuSnapshotApplyDuringTracking = true
+            return
         }
+        menuState.applyPendingSnapshot()
     }
 
-    private func shouldTrackTopLevelMenu(_ item: NSMenuItem) -> Bool {
-        let trackedTitles: Set<String> = [
-            String(localized: "menu.hid"),
-            String(localized: "menu.view"),
-            "HID",
-            "Input",
-            "输入",
-            "View",
-            "显示"
-        ]
-        return trackedTitles.contains(item.title)
+    func applyCurrentMenuSnapshotWhenSafe() {
+        let snapshot = makeMenuSnapshot()
+        guard menuTrackingDepth == 0 else {
+            menuState.stage(snapshot)
+            hasDeferredMenuSnapshotApplyDuringTracking = true
+            return
+        }
+        menuState.replaceImmediately(snapshot)
     }
 
-    private func installMenuTrackingDelegate(in menu: NSMenu?) {
-        guard let menu else { return }
-        let identifier = ObjectIdentifier(menu)
-        if let existing = menu.delegate as? AppMenuTrackingDelegate {
-            existing.model = self
-        } else if menuTrackingDelegates[identifier] == nil {
-            let delegate = AppMenuTrackingDelegate()
-            delegate.model = self
-            delegate.previous = menu.delegate
-            menuTrackingDelegates[identifier] = delegate
-            menu.delegate = delegate
-        }
-        for item in menu.items {
-            installMenuTrackingDelegate(in: item.submenu)
-        }
+    func applyPendingMenuSnapshot() {
+        applyPendingMenuSnapshotWhenSafe()
+    }
+
+    func applyCurrentMenuSnapshot() {
+        applyCurrentMenuSnapshotWhenSafe()
+    }
+
+    func makeStatusSelectorSnapshot() -> StatusSelectorSnapshot {
+        let connectingDeviceID = hidmi.connectingDeviceID
+        let isConnecting = connectingDeviceID != nil
+        let endpointErrors = hidmi.endpointConnectionFailuresByDeviceID
+
+        return StatusSelectorSnapshot(
+            statusBar: statusBarSnapshot,
+            statusBarDetailMode: statusBarDetailMode,
+            captureDevices: devices.map { device in
+                AppMenuCaptureDeviceItem(
+                    id: device.id,
+                    title: device.name,
+                    isSelected: selectedDeviceID == device.id
+                )
+            },
+            isCaptureDeviceOptionsEnabled: selectedDeviceID != nil,
+            usesAutomaticCaptureFormat: usesAutomaticFormat,
+            captureFormats: currentFormats.map { format in
+                AppMenuCaptureFormatItem(
+                    id: format.id,
+                    title: format.menuTitle,
+                    dimensions: format.dimensions,
+                    frameRateMillis: format.frameRateMillis,
+                    mediaSubType: format.mediaSubType,
+                    resolutionTitle: format.resolutionTitle,
+                    frameRateTitle: format.frameRateTitle,
+                    colorFormatTitle: format.colorFormatTitle,
+                    isSelected: !usesAutomaticFormat && selectedFormatID == format.id
+                )
+            },
+            kvmDevices: hidmi.menuDeviceStates.map { state in
+                let connectionState = kvmSelectorConnectionState(
+                    for: state,
+                    connectingDeviceID: connectingDeviceID,
+                    endpointErrors: endpointErrors
+                )
+                return StatusSelectorKVMDeviceItem(
+                    id: state.id,
+                    title: state.device.menuTitle,
+                    marker: state.marker,
+                    actionTitle: kvmActionTitle(for: connectionState),
+                    isActionEnabled: kvmIsActionEnabled(for: connectionState, device: state.device),
+                    details: state.menuDetails,
+                    symbolName: transportSymbolName(for: state.device),
+                    connectionState: connectionState
+                )
+            },
+            isHIDMIDiscovering: hidmi.isDiscovering,
+            isHIDMIConnecting: isConnecting,
+            connectingHIDMIDeviceID: connectingDeviceID,
+            kvmEndpointErrors: endpointErrors,
+            isHIDMIConnected: hidmi.isConnected
+        )
     }
 
     private func emitObjectWillChangeRespectingMenuTracking() {
@@ -576,6 +1111,69 @@ final class AppModel: ObservableObject {
             return
         }
         objectWillChange.send()
+    }
+
+    private func scheduleMenuSnapshotUpdate() {
+        DispatchQueue.main.async { [weak self] in
+            self?.stageMenuSnapshot()
+        }
+    }
+
+    private func stageMenuSnapshot() {
+        menuState.stage(makeMenuSnapshot())
+    }
+
+    private func replaceMenuSnapshotImmediately() {
+        menuState.replaceImmediately(makeMenuSnapshot())
+    }
+
+    private func makeMenuSnapshot() -> AppMenuSnapshot {
+        let isConnecting = hidmi.connectingDeviceID != nil
+
+        return AppMenuSnapshot(
+            statusBarDetailMode: statusBarDetailMode,
+            statusBarVisibility: statusBarVisibility,
+            canShowOriginalInput: inputSize != nil,
+            isOriginalInputMode: isOriginalInputMode,
+            isFitToWindowMode: isFitToWindowMode,
+            captureDevices: devices.map { device in
+                AppMenuCaptureDeviceItem(
+                    id: device.id,
+                    title: device.name,
+                    isSelected: selectedDeviceID == device.id
+                )
+            },
+            isCaptureDeviceOptionsEnabled: selectedDeviceID != nil,
+            usesAutomaticCaptureFormat: usesAutomaticFormat,
+            captureFormats: currentFormats.map { format in
+                AppMenuCaptureFormatItem(
+                    id: format.id,
+                    title: format.menuTitle,
+                    dimensions: format.dimensions,
+                    frameRateMillis: format.frameRateMillis,
+                    mediaSubType: format.mediaSubType,
+                    resolutionTitle: format.resolutionTitle,
+                    frameRateTitle: format.frameRateTitle,
+                    colorFormatTitle: format.colorFormatTitle,
+                    isSelected: !usesAutomaticFormat && selectedFormatID == format.id
+                )
+            },
+            inputDevices: hidmi.menuDeviceStates.map { state in
+                let actionTitle = state.marker == .connected
+                    ? String(localized: "hid.device.disconnect_this_device")
+                    : String(localized: "hid.device.connect_this_device")
+                return AppMenuInputDeviceItem(
+                    id: state.id,
+                    title: state.device.menuTitle,
+                    marker: state.marker,
+                    actionTitle: actionTitle,
+                    isActionEnabled: state.marker == .connected || (!isConnecting && state.device.isConnectable),
+                    details: state.menuDetails
+                )
+            },
+            isHIDMIDiscovering: hidmi.isDiscovering,
+            isHIDMIConnected: hidmi.isConnected
+        )
     }
 
     func showTokenManagement() {
@@ -653,6 +1251,243 @@ final class AppModel: ObservableObject {
             availableSize: availableSize,
             backingScaleFactor: windowController.backingScaleFactor
         )
+    }
+
+    static func captureStatusBarItem(
+        state: ViewerState,
+        hasCaptureDevices: Bool,
+        selectedDeviceName: String?,
+        formatDescription: String?,
+        inputSize: CGSize?
+    ) -> HIDMIStatusBarItem {
+        guard hasCaptureDevices else {
+            return HIDMIStatusBarItem(
+                signal: .red,
+                symbolName: "video",
+                title: String(localized: "status.capture.unavailable"),
+                detail: nil
+            )
+        }
+
+        switch state {
+        case .running:
+            let detail = captureStatusBarDetail(
+                deviceName: selectedDeviceName,
+                formatDescription: formatDescription,
+                inputSize: inputSize
+            )
+            return HIDMIStatusBarItem(
+                signal: .green,
+                symbolName: "video",
+                title: String(localized: "status.capture.showing"),
+                detail: detail
+            )
+        case .configuring, .requestingPermission:
+            return HIDMIStatusBarItem(
+                signal: .yellow,
+                symbolName: "video",
+                title: String(localized: "status.capture.configuring"),
+                detail: selectedDeviceName.map {
+                    String(format: String(localized: "status.capture.detail_device_only"), $0)
+                }
+            )
+        case .idle:
+            return HIDMIStatusBarItem(
+                signal: .yellow,
+                symbolName: "video",
+                title: String(localized: "status.capture.choose"),
+                detail: nil
+            )
+        case .permissionDenied, .permissionRestricted, .noDevice, .failed:
+            return HIDMIStatusBarItem(
+                signal: .red,
+                symbolName: "video",
+                title: String(localized: "status.capture.unavailable"),
+                detail: nil
+            )
+        }
+    }
+
+    private var selectedCaptureFormatDescription: String? {
+        if !usesAutomaticFormat,
+           let selectedFormatID,
+           let format = deviceStore.format(withID: selectedFormatID) {
+            return format.menuTitle
+        }
+
+        if let inputSize,
+           let matchingFormat = deviceStore.formatMatching(
+            dimensions: VideoDimensions(
+                width: Int32(inputSize.width.rounded()),
+                height: Int32(inputSize.height.rounded())
+            )
+           ) {
+            return matchingFormat.menuTitle
+        }
+
+        if let automaticFormat = deviceStore.automaticFormat {
+            return automaticFormat.menuTitle
+        }
+
+        if let inputSize {
+            return String(
+                format: String(localized: "status.capture.dimensions"),
+                Int(inputSize.width.rounded()),
+                Int(inputSize.height.rounded())
+            )
+        }
+
+        return nil
+    }
+
+    private static func captureStatusBarDetail(
+        deviceName: String?,
+        formatDescription: String?,
+        inputSize: CGSize?
+    ) -> String? {
+        let resolvedFormat = formatDescription ?? inputSize.map {
+            String(
+                format: String(localized: "status.capture.dimensions"),
+                Int($0.width.rounded()),
+                Int($0.height.rounded())
+            )
+        }
+        guard let deviceName else { return resolvedFormat }
+        guard let resolvedFormat else {
+            return String(format: String(localized: "status.capture.detail_device_only"), deviceName)
+        }
+        return String(format: String(localized: "status.capture.detail"), deviceName, resolvedFormat)
+    }
+
+    private func kvmStatusBarItem() -> HIDMIStatusBarItem {
+        let device = preferredHIDMIStatusDevice()
+        if case .failed = hidmi.status {
+            return HIDMIStatusBarItem(
+                signal: .blinkingRed,
+                symbolName: Self.kvmDefaultSymbolName,
+                title: String(localized: "status.kvm.failed"),
+                detail: device.map(kvmStatusBarDetail)
+            )
+        }
+
+        if hidmi.connectedDeviceID != nil {
+            return HIDMIStatusBarItem(
+                signal: .green,
+                symbolName: transportSymbolName(for: device),
+                title: String(localized: "status.kvm.connected"),
+                detail: device.map(kvmStatusBarDetail)
+            )
+        }
+
+        if !hidmi.discoveredDevices.isEmpty {
+            return HIDMIStatusBarItem(
+                signal: .yellow,
+                symbolName: Self.kvmDefaultSymbolName,
+                title: String(localized: "status.kvm.available"),
+                detail: device.map(kvmStatusBarDetail)
+            )
+        }
+
+        return HIDMIStatusBarItem(
+            signal: .red,
+            symbolName: Self.kvmDefaultSymbolName,
+            title: String(localized: "status.kvm.not_found"),
+            detail: nil
+        )
+    }
+
+    private func preferredHIDMIStatusDevice() -> HIDMIDiscoveredDevice? {
+        if let connectedDeviceID = hidmi.connectedDeviceID,
+           let device = hidmi.discoveredDevices.first(where: { $0.id == connectedDeviceID }) {
+            return device
+        }
+        if let selectedDeviceID = hidmi.selectedDeviceID,
+           let device = hidmi.discoveredDevices.first(where: { $0.id == selectedDeviceID }) {
+            return device
+        }
+        return hidmi.discoveredDevices.first
+    }
+
+    private static let kvmDefaultSymbolName = "command"
+
+    private func transportSymbolName(for device: HIDMIDiscoveredDevice?) -> String {
+        switch device?.transport {
+        case .wlan:
+            return "wifi"
+        case .ethernet, .usb, nil:
+            return "cable.connector"
+        }
+    }
+
+    private func kvmSelectorConnectionState(
+        for state: HIDMIMenuDeviceState,
+        connectingDeviceID: HIDMIDiscoveredDevice.ID?,
+        endpointErrors: [HIDMIDiscoveredDevice.ID: String]
+    ) -> StatusSelectorKVMConnectionState {
+        if state.marker == .connected {
+            return .connected
+        }
+        if connectingDeviceID == state.id {
+            return .connecting
+        }
+        guard state.device.isConnectable else {
+            return .unavailable(state.device.availability.userFacingConnectionDescription)
+        }
+        if let error = endpointErrors[state.id] {
+            return .failed(error)
+        }
+        return .available
+    }
+
+    private func kvmActionTitle(for state: StatusSelectorKVMConnectionState) -> String {
+        switch state {
+        case .connected:
+            return String(localized: "hid.device.disconnect_this_device")
+        case .connecting:
+            return String(localized: "hid.device.cancel_connection")
+        case .failed:
+            return String(localized: "hid.device.retry_connection")
+        case .available, .unavailable:
+            return String(localized: "hid.device.connect_this_device")
+        }
+    }
+
+    private func kvmIsActionEnabled(
+        for state: StatusSelectorKVMConnectionState,
+        device: HIDMIDiscoveredDevice
+    ) -> Bool {
+        switch state {
+        case .connected, .connecting:
+            return true
+        case .available, .failed:
+            return device.isConnectable
+        case .unavailable:
+            return false
+        }
+    }
+
+    private func kvmStatusBarDetail(for device: HIDMIDiscoveredDevice) -> String {
+        String(
+            format: String(localized: "status.kvm.detail"),
+            device.displayName,
+            device.connectionAddressSummary
+        )
+    }
+
+    private static func loadStatusBarDetailMode(from defaults: UserDefaults) -> StatusBarDetailMode {
+        guard let value = defaults.string(forKey: statusBarDetailModeDefaultsKey),
+              let mode = StatusBarDetailMode(rawValue: value) else {
+            return .detailed
+        }
+        return mode
+    }
+
+    private static func loadStatusBarVisibility(from defaults: UserDefaults) -> StatusBarVisibility {
+        guard let value = defaults.string(forKey: statusBarVisibilityDefaultsKey),
+              let visibility = StatusBarVisibility(rawValue: value) else {
+            return .always
+        }
+        return visibility
     }
 
     private func resetRemoteInputLocally() {

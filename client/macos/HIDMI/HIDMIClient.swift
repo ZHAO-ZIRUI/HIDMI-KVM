@@ -151,7 +151,13 @@ struct HIDMIDevice: Equatable, Sendable {
     }
 
     var discoveryID: String {
-        deviceID.isEmpty ? host : deviceID
+        let baseID = deviceID.isEmpty ? host : deviceID
+        switch transport {
+        case .wlan:
+            return "\(baseID)#wlan"
+        case .ethernet, .usb:
+            return baseID
+        }
     }
 
     func withCapabilities(_ capabilities: Set<String>) -> HIDMIDevice {
@@ -289,6 +295,11 @@ enum HIDMIClientError: LocalizedError, Sendable {
                 || lowercased.contains("timeout") {
                 return .timeout
             }
+            if lowercased.contains("no route to host")
+                || lowercased.contains("network is unreachable")
+                || lowercased.contains("host is unreachable") {
+                return .network
+            }
             if lowercased.contains("socket closed")
                 || lowercased.contains("connection closed")
                 || lowercased.contains("not connected") {
@@ -336,6 +347,29 @@ enum HIDMIClientError: LocalizedError, Sendable {
     var userFacingConnectionDescription: String {
         if case .server(let code, _) = self, code == "AUTH_RATE_LIMITED" {
             return String(localized: "error.auth_rate_limited")
+        }
+        if case .posix(_, let code) = self {
+            switch code {
+            case ENETUNREACH, EHOSTUNREACH:
+                return String(localized: "error.network_unreachable")
+            case ECONNREFUSED:
+                return String(localized: "error.connection_refused")
+            case ETIMEDOUT:
+                return String(localized: "error.device_response_timeout")
+            default:
+                break
+            }
+        }
+        if case .message(let message) = self {
+            let lowercased = message.lowercased()
+            if lowercased.contains("no route to host")
+                || lowercased.contains("network is unreachable")
+                || lowercased.contains("host is unreachable") {
+                return String(localized: "error.network_unreachable")
+            }
+            if lowercased.contains("connection refused") {
+                return String(localized: "error.connection_refused")
+            }
         }
         switch connectionFailureKind {
         case .timeout:

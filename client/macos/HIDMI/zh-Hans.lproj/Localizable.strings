@@ -2,7 +2,9 @@
 "menu.formats" = "格式";
 "menu.hid" = "输入";
 "menu.view" = "显示";
+"menu.video" = "画面";
 "menu.window" = "窗口";
+"menu.help" = "帮助";
 
 "device.none" = "未找到视频输入";
 "device.refresh" = "刷新设备";
@@ -10,11 +12,45 @@
 "format.device_options" = "设备选项";
 "format.auto_best" = "自动最佳";
 "format.none" = "没有可用格式";
+"format.resolution" = "分辨率";
+"format.refresh_rate" = "刷新率";
+"format.color_format" = "颜色格式";
 
 "view.original_input" = "原始输入";
 "view.fit_to_window" = "适合窗口";
-"view.enter_full_screen" = "进入全屏幕";
-"view.exit_full_screen" = "退出全屏幕";
+"view.status_bar" = "状态栏";
+
+"status_bar.icons_only" = "仅图标";
+"status_bar.detailed" = "详细信息";
+"status_bar.hidden" = "隐藏";
+"status_bar.window_only" = "仅窗口显示";
+"status_bar.full_screen_only" = "仅全屏显示";
+"status_bar.always_show" = "始终显示";
+
+"status.capture.unavailable" = "采集不可用";
+"status.capture.choose" = "请选择采集卡";
+"status.capture.showing" = "正在显示";
+"status.capture.configuring" = "正在配置";
+"status.capture.dimensions" = "%dx%d";
+"status.capture.detail" = "采集：%@ · %@";
+"status.capture.detail_device_only" = "采集：%@";
+
+"status.kvm.not_found" = "未发现 KVM";
+"status.kvm.available" = "KVM 可用";
+"status.kvm.connected" = "KVM 已连接";
+"status.kvm.failed" = "KVM 连接失败";
+"status.kvm.detail" = "KVM：%@ · %@";
+
+"selector.capture.title" = "采集卡";
+"selector.capture.devices" = "采集卡";
+"selector.capture.formats" = "画面格式";
+"selector.kvm.title" = "KVM";
+"selector.kvm.devices" = "KVM 设备";
+"selector.kvm.connected" = "已连接";
+"selector.kvm.connecting" = "正在连接，点击取消";
+"selector.close" = "关闭";
+"selector.drawer.open" = "打开状态抽屉";
+"selector.drawer.close" = "关闭状态抽屉";
 
 "hidmi.status.disconnected" = "HIDMI KVM 未连接";
 "hidmi.status.discovering" = "正在查找 HIDMI KVM 设备…";
@@ -32,6 +68,8 @@
 "hid.device.display_name" = "HIDMI KVM 设备";
 "hid.device.none" = "未找到 HIDMI KVM 设备";
 "hid.device.connect_this_device" = "连接该设备";
+"hid.device.cancel_connection" = "取消连接";
+"hid.device.retry_connection" = "重试连接";
 "hid.device.disconnect_this_device" = "断开该设备";
 "hid.device.eth_device" = "局域网设备";
 "hid.device.wlan_device" = "无线局域网设备";
@@ -55,7 +93,7 @@
 "hid.connection.warning.lost_message" = "%@ 意外断开。\n\n%@";
 "hid.connection.warning.unknown_device" = "HIDMI KVM 设备";
 
-"overlay.preparing_input" = "从“显示”菜单选择视频输入";
+"overlay.preparing_input" = "从顶部状态区选择采集卡";
 "overlay.requesting_permission" = "正在请求相机权限…";
 "overlay.permission_denied" = "需要在系统设置中允许相机访问";
 "overlay.permission_restricted" = "相机访问受系统限制";
@@ -82,6 +120,8 @@
 "error.invalid_port" = "%@ 无效：%d";
 "error.response_too_large" = "服务端响应过大";
 "error.device_response_timeout" = "设备响应超时";
+"error.network_unreachable" = "网络不可达";
+"error.connection_refused" = "设备拒绝连接";
 "error.server_busy" = "服务端忙，正在重试";
 "error.hid_unavailable" = "被控端 HID 接口不可用";
 "error.auth_rate_limited" = "令牌失败次数过多，请稍后重试";

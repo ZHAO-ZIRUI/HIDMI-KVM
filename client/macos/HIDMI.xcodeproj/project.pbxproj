@@ -22,6 +22,7 @@
 		3A10100D2C00000100000001 /* HIDMITokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020182C00000100000001 /* HIDMITokenStore.swift */; };
 		3A10100E2C00000100000001 /* HIDMIUITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020192C00000100000001 /* HIDMIUITestSupport.swift */; };
 		3A10100F2C00000100000001 /* HIDInputMenuController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020202C00000100000001 /* HIDInputMenuController.swift */; };
+		3A1010102C00000100000001 /* MenuTrackingGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020212C00000100000001 /* MenuTrackingGate.swift */; };
 		3A1010112C00000100000001 /* PreviewSizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020222C00000100000001 /* PreviewSizing.swift */; };
 		3A1010122C00000100000001 /* ViewMenuController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020232C00000100000001 /* ViewMenuController.swift */; };
 		3A1010132C00000100000001 /* enum_ack_result.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020242C00000100000001 /* enum_ack_result.pb.swift */; };
@@ -84,6 +85,7 @@
 		3A1020182C00000100000001 /* HIDMITokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDMITokenStore.swift; sourceTree = "<group>"; };
 		3A1020192C00000100000001 /* HIDMIUITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDMIUITestSupport.swift; sourceTree = "<group>"; };
 		3A1020202C00000100000001 /* HIDInputMenuController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDInputMenuController.swift; sourceTree = "<group>"; };
+		3A1020212C00000100000001 /* MenuTrackingGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuTrackingGate.swift; sourceTree = "<group>"; };
 		3A1020222C00000100000001 /* PreviewSizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSizing.swift; sourceTree = "<group>"; };
 		3A1020232C00000100000001 /* ViewMenuController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewMenuController.swift; sourceTree = "<group>"; };
 		3A1020242C00000100000001 /* enum_ack_result.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = enum_ack_result.pb.swift; sourceTree = "<group>"; };
@@ -157,6 +159,7 @@
 				3A1020152C00000100000001 /* HIDMIClient.swift */,
 				3A1020162C00000100000001 /* HIDMIController.swift */,
 				3A1020202C00000100000001 /* HIDInputMenuController.swift */,
+				3A1020212C00000100000001 /* MenuTrackingGate.swift */,
 				3A1020232C00000100000001 /* ViewMenuController.swift */,
 				3A1020182C00000100000001 /* HIDMITokenStore.swift */,
 				3A1020192C00000100000001 /* HIDMIUITestSupport.swift */,
@@ -382,6 +385,7 @@
 				3A10100A2C00000100000001 /* HIDMIClient.swift in Sources */,
 				3A10100B2C00000100000001 /* HIDMIController.swift in Sources */,
 				3A10100F2C00000100000001 /* HIDInputMenuController.swift in Sources */,
+				3A1010102C00000100000001 /* MenuTrackingGate.swift in Sources */,
 				3A1010122C00000100000001 /* ViewMenuController.swift in Sources */,
 				3A1010112C00000100000001 /* PreviewSizing.swift in Sources */,
 				3A10100D2C00000100000001 /* HIDMITokenStore.swift in Sources */,
