@@ -27,6 +27,7 @@
 		3A1010122C00000100000001 /* ViewMenuController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020232C00000100000001 /* ViewMenuController.swift */; };
 		3A1010132C00000100000001 /* enum_ack_result.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020242C00000100000001 /* enum_ack_result.pb.swift */; };
 		3A1010142C00000100000001 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 3A1130012C00000100000001 /* SwiftProtobuf */; };
+		3A1010151C00000100000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3A1020151C00000100000001 /* Assets.xcassets */; };
 		3A1010152C00000100000001 /* enum_channel_id.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020252C00000100000001 /* enum_channel_id.pb.swift */; };
 		3A1010162C00000100000001 /* enum_error_severity.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020262C00000100000001 /* enum_error_severity.pb.swift */; };
 		3A1010172C00000100000001 /* enum_goodbye_reason.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1020272C00000100000001 /* enum_goodbye_reason.pb.swift */; };
@@ -79,6 +80,7 @@
 		3A1020122C00000100000001 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		3A1020132C00000100000001 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		3A1020142C00000100000001 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		3A1020151C00000100000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		3A1020152C00000100000001 /* HIDMIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDMIClient.swift; sourceTree = "<group>"; };
 		3A1020162C00000100000001 /* HIDMIController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HIDMIController.swift; sourceTree = "<group>"; };
 		3A1020172C00000100000001 /* RemoteInputMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteInputMapper.swift; sourceTree = "<group>"; };
@@ -167,6 +169,7 @@
 				3A1040062C00000100000001 /* Generated */,
 				3A1020082C00000100000001 /* Info.plist */,
 				3A1020092C00000100000001 /* HIDMI.entitlements */,
+				3A1020151C00000100000001 /* Assets.xcassets */,
 				3A1040042C00000100000001 /* Localizable.strings */,
 				3A1040052C00000100000001 /* InfoPlist.strings */,
 			);
@@ -313,6 +316,7 @@
 			files = (
 				3A1010082C00000100000001 /* Localizable.strings in Resources */,
 				3A1010092C00000100000001 /* InfoPlist.strings in Resources */,
+				3A1010151C00000100000001 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -558,6 +562,7 @@
 		3A1100032C00000100000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				APP_DISPLAY_NAME = "HIDMI Debug";
 				CODE_SIGN_ENTITLEMENTS = HIDMI/HIDMI.entitlements;
@@ -601,6 +606,7 @@
 		3A1100042C00000100000001 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				APP_DISPLAY_NAME = HIDMI;
 				CODE_SIGN_ENTITLEMENTS = HIDMI/HIDMI.entitlements;
