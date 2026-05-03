@@ -522,6 +522,8 @@ final class AppModel: ObservableObject {
     private var pendingCameraPermissionWorkItem: DispatchWorkItem?
     private var cameraPermissionRequestGeneration: UInt64 = 0
     private var isCaptureRecoveryDirty = false
+    private var isMainWindowClosed = false
+    private var shouldResumeCaptureAfterMainWindowReopens = false
     private var menuTrackingDepth = 0
     private var selectorInteractionDepth = 0
     private var hasDeferredObjectWillChangeDuringMenuTracking = false
@@ -613,6 +615,7 @@ final class AppModel: ObservableObject {
         }
     }
     private(set) var isRemoteInputSuspendedByMenu = false
+    private(set) var isRemoteInputSuspendedByWindow = false
 
     private static let statusBarDetailModeDefaultsKey = "StatusBarDetailMode"
     private static let statusBarVisibilityDefaultsKey = "StatusBarVisibility"
@@ -669,6 +672,10 @@ final class AppModel: ObservableObject {
 
     var isStatusBarVisible: Bool {
         statusBarVisibility.isVisible(isFullScreen: isMainWindowFullScreen)
+    }
+
+    var isRemoteInputEnabled: Bool {
+        hidmi.isConnected && !isRemoteInputSuspendedByMenu && !isRemoteInputSuspendedByWindow
     }
 
     var statusBarSnapshot: HIDMIStatusBarSnapshot {
@@ -1204,17 +1211,19 @@ final class AppModel: ObservableObject {
                 "connected": "\(hidmi.isConnected)",
                 "event": event.traceName,
                 "menu_suspended": "\(isRemoteInputSuspendedByMenu)",
+                "window_suspended": "\(isRemoteInputSuspendedByWindow)",
                 "sample_mono_us": "\(sampleMonoUs)"
             ]
         )
-        guard hidmi.isConnected, !isRemoteInputSuspendedByMenu else {
+        guard isRemoteInputEnabled else {
             HIDMIInputTrace.log(
                 "input_guard_drop",
                 fields: [
                     "connected": "\(hidmi.isConnected)",
                     "event": event.traceName,
                     "menu_suspended": "\(isRemoteInputSuspendedByMenu)",
-                    "reason": hidmi.isConnected ? "menu_suspended" : "not_connected",
+                    "window_suspended": "\(isRemoteInputSuspendedByWindow)",
+                    "reason": remoteInputDisabledReason(),
                     "sample_mono_us": "\(sampleMonoUs)"
                 ]
             )
@@ -1495,15 +1504,36 @@ final class AppModel: ObservableObject {
         _ = remoteInput.reset()
     }
 
+    private func setRemoteInputSuspendedByWindow(_ suspended: Bool) {
+        guard isRemoteInputSuspendedByWindow != suspended else { return }
+        emitObjectWillChangeRespectingMenuTracking()
+        isRemoteInputSuspendedByWindow = suspended
+    }
+
+    private func remoteInputDisabledReason() -> String {
+        if !hidmi.isConnected {
+            return "not_connected"
+        }
+        if isRemoteInputSuspendedByWindow {
+            return "window_suspended"
+        }
+        if isRemoteInputSuspendedByMenu {
+            return "menu_suspended"
+        }
+        return "unknown"
+    }
+
     private func observeWindowStateIfNeeded(_ window: NSWindow) {
         guard observedWindow !== window else {
             updateMainWindowFullScreenState(from: window)
+            handleMainWindowAvailable(window)
             return
         }
 
         observedWindow = window
         windowStateCancellables.removeAll()
         updateMainWindowFullScreenState(from: window)
+        handleMainWindowAvailable(window)
 
         NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification, object: window)
             .sink { [weak self, weak window] _ in
@@ -1518,12 +1548,81 @@ final class AppModel: ObservableObject {
                 self?.updateMainWindowFullScreenState(from: window)
             }
             .store(in: &windowStateCancellables)
+
+        NotificationCenter.default.publisher(for: NSWindow.willCloseNotification, object: window)
+            .sink { [weak self, weak window] _ in
+                guard let window else { return }
+                self?.handleMainWindowWillClose(window)
+            }
+            .store(in: &windowStateCancellables)
+
+        NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification, object: window)
+            .sink { [weak self, weak window] _ in
+                guard let window else { return }
+                self?.handleMainWindowAvailable(window)
+            }
+            .store(in: &windowStateCancellables)
     }
 
     private func updateMainWindowFullScreenState(from window: NSWindow) {
         let nextValue = window.styleMask.contains(.fullScreen)
         guard isMainWindowFullScreen != nextValue else { return }
         isMainWindowFullScreen = nextValue
+    }
+
+    private func handleMainWindowWillClose(_ window: NSWindow) {
+        guard observedWindow === window, !isMainWindowClosed else { return }
+        isMainWindowClosed = true
+        resetRemoteInputLocally()
+        hidmi.releaseAllBestEffort(timeout: 0.3)
+        setRemoteInputSuspendedByWindow(true)
+
+        shouldResumeCaptureAfterMainWindowReopens = shouldPauseCaptureForMainWindowClose()
+        if shouldResumeCaptureAfterMainWindowReopens {
+            stopPreview(releasesRemoteInput: false)
+        }
+    }
+
+    private func handleMainWindowAvailable(_ window: NSWindow) {
+        guard observedWindow === window else { return }
+        let shouldRestoreCapture = shouldResumeCaptureAfterMainWindowReopens
+        let wasClosed = isMainWindowClosed || isRemoteInputSuspendedByWindow
+        isMainWindowClosed = false
+        shouldResumeCaptureAfterMainWindowReopens = false
+        setRemoteInputSuspendedByWindow(false)
+        updateMainWindowFullScreenState(from: window)
+
+        guard wasClosed else { return }
+        frameReportGeneration += 1
+        if shouldRestoreCapture {
+            restoreCaptureAfterMainWindowReopen()
+        }
+    }
+
+    private func shouldPauseCaptureForMainWindowClose() -> Bool {
+        guard startsVideoInputSetup, selectedDeviceID != nil else { return false }
+        switch captureConfigurationState {
+        case .configuring, .waitingForFrames, .running, .recovering:
+            return true
+        case .idle:
+            return state == .running || state == .configuring
+        }
+    }
+
+    private func restoreCaptureAfterMainWindowReopen() {
+        guard startsVideoInputSetup else { return }
+        switch cameraPermissionManager.authorizationStatus() {
+        case .authorized:
+            refreshDevices()
+        case .notDetermined:
+            state = devices.isEmpty ? .noDevice : .idle
+        case .denied:
+            state = .permissionDenied
+        case .restricted:
+            state = .permissionRestricted
+        case .unknown:
+            state = .failed(String(localized: "overlay.unknown_permission"))
+        }
     }
 
     private func resetFrameObservationState(clearInputSize: Bool) {
@@ -1916,9 +2015,11 @@ final class AppModel: ObservableObject {
         scheduleCaptureRecovery()
     }
 
-    private func stopPreview() {
-        resetRemoteInputLocally()
-        hidmi.releaseAllBestEffort(timeout: 0.3)
+    private func stopPreview(releasesRemoteInput: Bool = true) {
+        if releasesRemoteInput {
+            resetRemoteInputLocally()
+            hidmi.releaseAllBestEffort(timeout: 0.3)
+        }
         sessionController.stop()
         pendingFrameDescriptorWorkItem?.cancel()
         pendingFrameDescriptorWorkItem = nil

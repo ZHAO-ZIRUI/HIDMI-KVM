@@ -36,6 +36,7 @@ struct VideoPreviewView: NSViewRepresentable {
         nsView.isRemoteInputEnabled = isRemoteInputEnabled
         nsView.actualFrameHandler = actualFrameHandler
         nsView.inputHandler = inputHandler
+        nsView.restoreRuntimeBindings()
     }
 }
 
@@ -166,10 +167,14 @@ final class PreviewHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.acceptsMouseMovedEvents = true
-        updatePreviewLayerScale()
-        DispatchQueue.main.async { [weak self] in
-            self?.requestRemoteInputFocusIfPossible()
+        if window == nil {
+            videoOutput?.setSampleBufferDelegate(nil, queue: nil)
+        } else {
+            window?.acceptsMouseMovedEvents = true
+            restoreRuntimeBindings()
+            DispatchQueue.main.async { [weak self] in
+                self?.requestRemoteInputFocusIfPossible()
+            }
         }
     }
 
@@ -365,6 +370,14 @@ final class PreviewHostView: NSView {
     func requestRemoteInputFocusIfPossible() {
         guard isRemoteInputEnabled, window != nil else { return }
         window?.makeFirstResponder(self)
+    }
+
+    func restoreRuntimeBindings() {
+        configureFrameOutput()
+        metalView?.isPaused = false
+        metalView?.enableSetNeedsDisplay = false
+        updatePreviewLayerScale()
+        requestRemoteInputFocusIfPossible()
     }
 
     private func setUpView() {

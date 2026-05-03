@@ -1,5 +1,6 @@
 import Darwin
 import AppKit
+import AVFoundation
 import Combine
 import CoreVideo
 import LocalAuthentication
@@ -1522,6 +1523,60 @@ final class HIDMIControllerTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === view)
     }
 
+    func testMainWindowCloseSuspendsRemoteInputAndReopenPreservesKVMConnection() async throws {
+        let device = makeDevice(id: "device-a", host: "192.168.1.10", requiresAuth: false)
+        let worker = FakeHIDMIWorker()
+        await worker.setAcceptedToken("", device: device)
+        let prompt = FakeTokenPrompt()
+        let hidmi = HIDMIController(
+            worker: worker,
+            tokenStore: FakeTokenStore(),
+            tokenPrompt: prompt
+        )
+        let model = AppModel(
+            hidmi: hidmi,
+            cameraPermissionManager: FakeCameraPermissionManager(status: .authorized),
+            startsVideoInputSetup: false
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        defer {
+            window.orderOut(nil)
+        }
+
+        model.attach(window: window)
+        hidmi.mergeDiscoveredDevices([device], seenAt: Date())
+        model.connectHIDMI(device.discoveryID)
+        await waitUntil { hidmi.isConnected }
+
+        XCTAssertTrue(hidmi.isConnected)
+        XCTAssertTrue(model.isRemoteInputEnabled)
+        let connectAttemptsBeforeClose = await worker.connectAttempts()
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        await waitUntil { await worker.bestEffortReleaseAllCallCount() >= 1 }
+
+        XCTAssertTrue(hidmi.isConnected)
+        XCTAssertTrue(model.isRemoteInputSuspendedByWindow)
+        XCTAssertFalse(model.isRemoteInputEnabled)
+        XCTAssertFalse(model.handleRemoteInput(.keyDown(try makeKeyEvent())))
+        let sentReportCountAfterClose = await worker.sentReportCount()
+        XCTAssertEqual(sentReportCountAfterClose, 0)
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+
+        XCTAssertTrue(hidmi.isConnected)
+        XCTAssertFalse(model.isRemoteInputSuspendedByWindow)
+        XCTAssertTrue(model.isRemoteInputEnabled)
+        let connectAttemptsAfterReopen = await worker.connectAttempts()
+        XCTAssertEqual(connectAttemptsAfterReopen, connectAttemptsBeforeClose)
+        XCTAssertTrue(prompt.requestedDeviceIDs.isEmpty)
+    }
+
     func testCaptureDeviceIdentityFilterExcludesIPhoneAndContinuityCamera() {
         XCTAssertTrue(CaptureDeviceStore.shouldExcludeVideoDeviceIdentity(
             name: "Garry's iPhone Camera",
@@ -2010,6 +2065,21 @@ final class HIDMIControllerTests: XCTestCase {
             XCTAssertFalse(view.usesMetalBackendForTesting)
             XCTAssertTrue(view.usesPreviewLayerBackendForTesting)
         }
+    }
+
+    func testPreviewHostViewRestoresVideoOutputDelegateWhenRuntimeBindingsAreRestored() {
+        let output = AVCaptureVideoDataOutput()
+        let view = PreviewHostView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+
+        view.videoOutput = output
+        XCTAssertNotNil(output.sampleBufferDelegate)
+
+        output.setSampleBufferDelegate(nil, queue: nil)
+        XCTAssertNil(output.sampleBufferDelegate)
+
+        view.restoreRuntimeBindings()
+
+        XCTAssertNotNil(output.sampleBufferDelegate)
     }
 
     func testVideoMenuControllerBuildsCaptureSectionsAndHasNoImages() {

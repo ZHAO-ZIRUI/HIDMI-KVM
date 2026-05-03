@@ -42,7 +42,7 @@ struct ContentView: View {
                                 frameReportGeneration: model.frameReportGeneration,
                                 inputSize: model.inputSize,
                                 isAbsolutePointerActive: model.hidmi.isConnected && model.hidmi.usesAbsolutePointer,
-                                isRemoteInputEnabled: model.hidmi.isConnected && !model.isRemoteInputSuspendedByMenu,
+                                isRemoteInputEnabled: model.isRemoteInputEnabled,
                                 actualFrameHandler: model.updateActualVideoFrame,
                                 inputHandler: model.handleRemoteInput
                             )
