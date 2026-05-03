@@ -4,6 +4,8 @@ Language: English | [Simplified Chinese](README.cn.md)
 
 HIDMI is a local-network, hardware-level KVM project. It lets a Mac display a target computer's HDMI output and uses a Linux device with USB gadget support to send standard USB HID keyboard and mouse input to the target.
 
+![](./docs/main.png)
+
 The target computer does not need agent software. If it can output HDMI and recognize a USB keyboard and mouse, it can be controlled in BIOS, boot menus, installers, and operating systems.
 
 ## Project Status
