@@ -30,6 +30,7 @@ struct Daemon::PendingSession {
     std::string disconnect_reason;
     bool cleanup_requested = false;
     bool active = false;
+    bool has_last_keyboard_seq = false;
     std::uint32_t last_keyboard_seq = 0;
 };
 
@@ -981,7 +982,6 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
         {
             std::lock_guard<std::mutex> lock(mutex_);
             session->last_activity = std::chrono::steady_clock::now();
-            last_input_activity_ = session->last_activity;
         }
         set_runtime_client_request_activity();
 
@@ -1100,12 +1100,14 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
         }
 
         if (channel == pb::CHANNEL_KEYBOARD) {
+            bool keyboard_input_frame = frame.body_case() == pb::TcpFrame::kKeyboardState
+                || frame.body_case() == pb::TcpFrame::kKeyboardSpecial;
+            if (keyboard_input_frame && session->has_last_keyboard_seq && frame.seq() == session->last_keyboard_seq) {
+                send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_DUPLICATED);
+                set_runtime_client_response_activity();
+                continue;
+            }
             if (frame.body_case() == pb::TcpFrame::kKeyboardState) {
-                if (frame.seq() == session->last_keyboard_seq) {
-                    send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_DUPLICATED);
-                    set_runtime_client_response_activity();
-                    continue;
-                }
                 const auto& state = frame.keyboard_state();
                 std::vector<int> keys;
                 keys.reserve(6);
@@ -1115,6 +1117,7 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                 int modifiers = static_cast<int>(std::min<std::uint32_t>(state.modifier_mask(), 0xff));
                 led_input_received();
                 if (drop_input_for_usb_grace(session)) {
+                    session->has_last_keyboard_seq = true;
                     session->last_keyboard_seq = frame.seq();
                     send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
                     set_runtime_client_response_activity();
@@ -1127,9 +1130,11 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     record_keyboard_pressed_state(modifiers, keys);
                     led_hid_event_sent(modifiers != 0 || !keys.empty());
                     led_hid_success(writer);
+                    session->has_last_keyboard_seq = true;
                     session->last_keyboard_seq = frame.seq();
                 } catch (const std::exception& exc) {
                     if (handle_hid_write_failure(session, "keyboard state failed", exc, true)) {
+                        session->has_last_keyboard_seq = true;
                         session->last_keyboard_seq = frame.seq();
                         send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
                         set_runtime_client_response_activity();
@@ -1143,12 +1148,16 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
             }
             if (frame.body_case() == pb::TcpFrame::kKeyboardSpecial) {
                 if (frame.keyboard_special().spec_id() != pb::KEYBOARD_SPECIAL_CTRL_ALT_DEL) {
+                    session->has_last_keyboard_seq = true;
+                    session->last_keyboard_seq = frame.seq();
                     send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_REJECTED, "unsupported special key");
                     set_runtime_client_response_activity();
                     continue;
                 }
                 led_input_received();
                 if (drop_input_for_usb_grace(session)) {
+                    session->has_last_keyboard_seq = true;
+                    session->last_keyboard_seq = frame.seq();
                     send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
                     set_runtime_client_response_activity();
                     continue;
@@ -1165,8 +1174,12 @@ void Daemon::handle_tcp_channel(std::shared_ptr<PendingSession> session, int cha
                     clear_input_pressed_state();
                     led_hid_event_sent(false);
                     led_hid_success(writer);
+                    session->has_last_keyboard_seq = true;
+                    session->last_keyboard_seq = frame.seq();
                 } catch (const std::exception& exc) {
                     if (handle_hid_write_failure(session, "keyboard special failed", exc, true)) {
+                        session->has_last_keyboard_seq = true;
+                        session->last_keyboard_seq = frame.seq();
                         send_ack(conn_fd, *session, channel, frame.seq(), pb::ACK_OK);
                         set_runtime_client_response_activity();
                         continue;

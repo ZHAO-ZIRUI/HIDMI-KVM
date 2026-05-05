@@ -12,6 +12,14 @@ constexpr double kShortFlashOnSec = 0.12;
 constexpr double kShortFlashOffSec = 0.12;
 constexpr auto kAbsoluteMouseRetryInterval = std::chrono::seconds(3);
 
+void write_hid_report(int fd, const std::vector<std::uint8_t>& report, int timeout_ms, const std::string& context) {
+    try {
+        write_fd_all(fd, report, timeout_ms);
+    } catch (const std::exception& exc) {
+        throw std::runtime_error(context + ": " + exc.what());
+    }
+}
+
 }  // namespace
 
 HidWriter::HidWriter(std::string keyboard_path, std::string mouse_path, std::string absolute_mouse_path)
@@ -108,7 +116,7 @@ void HidWriter::write_keyboard_report(int modifiers, const std::vector<int>& key
         if (keys[i] < 0 || keys[i] > 0xff) throw std::runtime_error("key usage must be 0..255");
         report[i + 2] = static_cast<std::uint8_t>(keys[i]);
     }
-    write_fd_all(keyboard_fd_, report, timeout_ms);
+    write_hid_report(keyboard_fd_, report, timeout_ms, "keyboard HID write failed");
 }
 
 void HidWriter::write_mouse_report(int buttons, int dx, int dy, int wheel, int timeout_ms) {
@@ -117,7 +125,12 @@ void HidWriter::write_mouse_report(int buttons, int dx, int dy, int wheel, int t
     for (int value : {dx, dy, wheel}) {
         if (value < -127 || value > 127) throw std::runtime_error("mouse movement values must be -127..127");
     }
-    write_fd_all(mouse_fd_, {static_cast<std::uint8_t>(buttons), static_cast<std::uint8_t>(dx), static_cast<std::uint8_t>(dy), static_cast<std::uint8_t>(wheel)}, timeout_ms);
+    write_hid_report(
+        mouse_fd_,
+        {static_cast<std::uint8_t>(buttons), static_cast<std::uint8_t>(dx), static_cast<std::uint8_t>(dy), static_cast<std::uint8_t>(wheel)},
+        timeout_ms,
+        "mouse HID write failed"
+    );
 }
 
 void HidWriter::write_absolute_mouse_report(int buttons, int x, int y, int timeout_ms) {
@@ -127,7 +140,12 @@ void HidWriter::write_absolute_mouse_report(int buttons, int x, int y, int timeo
     if (y < 0 || y > 32767) throw std::runtime_error("y must be 0..32767");
     last_absolute_x_ = x;
     last_absolute_y_ = y;
-    write_fd_all(absolute_mouse_fd_, {static_cast<std::uint8_t>(buttons), static_cast<std::uint8_t>(x), static_cast<std::uint8_t>(x >> 8), static_cast<std::uint8_t>(y), static_cast<std::uint8_t>(y >> 8)}, timeout_ms);
+    write_hid_report(
+        absolute_mouse_fd_,
+        {static_cast<std::uint8_t>(buttons), static_cast<std::uint8_t>(x), static_cast<std::uint8_t>(x >> 8), static_cast<std::uint8_t>(y), static_cast<std::uint8_t>(y >> 8)},
+        timeout_ms,
+        "absolute mouse HID write failed"
+    );
 }
 
 void HidWriter::write_pointer_report(int buttons, int x, int y, int dx, int dy, int wheel, bool reliable_edge, int timeout_ms) {
@@ -160,9 +178,16 @@ void HidWriter::write_pointer_report(int buttons, int x, int y, int dx, int dy, 
 }
 
 void HidWriter::release_all() {
-    if (keyboard_fd_ >= 0) write_fd_all(keyboard_fd_, {0, 0, 0, 0, 0, 0, 0, 0});
-    if (mouse_fd_ >= 0) write_fd_all(mouse_fd_, {0, 0, 0, 0});
-    if (absolute_mouse_fd_ >= 0) write_fd_all(absolute_mouse_fd_, {0, static_cast<std::uint8_t>(last_absolute_x_), static_cast<std::uint8_t>(last_absolute_x_ >> 8), static_cast<std::uint8_t>(last_absolute_y_), static_cast<std::uint8_t>(last_absolute_y_ >> 8)});
+    if (keyboard_fd_ >= 0) write_hid_report(keyboard_fd_, {0, 0, 0, 0, 0, 0, 0, 0}, 250, "keyboard HID release failed");
+    if (mouse_fd_ >= 0) write_hid_report(mouse_fd_, {0, 0, 0, 0}, 250, "mouse HID release failed");
+    if (absolute_mouse_fd_ >= 0) {
+        write_hid_report(
+            absolute_mouse_fd_,
+            {0, static_cast<std::uint8_t>(last_absolute_x_), static_cast<std::uint8_t>(last_absolute_x_ >> 8), static_cast<std::uint8_t>(last_absolute_y_), static_cast<std::uint8_t>(last_absolute_y_ >> 8)},
+            250,
+            "absolute mouse HID release failed"
+        );
+    }
 }
 
 void HidWriter::close_absolute_mouse() noexcept {

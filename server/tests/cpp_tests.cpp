@@ -419,6 +419,8 @@ void test_tcp_error_message_normalization() {
     expect(timeout.rfind("HID_FAILURE:", 0) == 0, "HID write timeout should be prefixed");
     auto endpoint = hidmi::internal::normalize_tcp_error_message("USB gadget endpoint is unavailable");
     expect(endpoint.rfind("HID_FAILURE:", 0) == 0, "USB gadget endpoint failure should be prefixed");
+    auto posix_protocol = hidmi::internal::normalize_tcp_error_message("keyboard HID write failed: Protocol error");
+    expect(posix_protocol.rfind("HID_FAILURE:", 0) == 0, "contextualized HID protocol errors should be prefixed");
     auto already_prefixed = hidmi::internal::normalize_tcp_error_message("HID_FAILURE: failed to open /dev/hidg0");
     expect(already_prefixed == "HID_FAILURE: failed to open /dev/hidg0", "HID prefix should not be duplicated");
     auto protocol = hidmi::internal::normalize_tcp_error_message("frame channel/session mismatch");
@@ -597,6 +599,42 @@ void test_hid_writer_failed_open_does_not_leak_fd() {
     }
     int after = count_open_fds();
     expect(after <= before + 1, "repeated failed HID opens should not leak file descriptors");
+    fs::remove_all(root);
+}
+
+void test_hid_writer_write_errors_include_hid_context() {
+    if (!fs::exists("/dev/full")) return;
+    fs::path root = fs::temp_directory_path() / ("hidmi-write-context-test-" + hidmi::random_b64url(8));
+    fs::create_directories(root);
+    fs::path keyboard = root / "kbd";
+    fs::path mouse = root / "mouse";
+    fs::path absolute = root / "abs";
+    write_file(keyboard);
+    write_file(mouse);
+    write_file(absolute);
+
+    {
+        hidmi::HidWriter writer("/dev/full", mouse.string(), "");
+        writer.open();
+        expect_throws_contains("keyboard HID write failed", [&] {
+            writer.write_keyboard_report(0, {4});
+        }, "keyboard write errors should include HID context");
+    }
+    {
+        hidmi::HidWriter writer(keyboard.string(), "/dev/full", "");
+        writer.open();
+        expect_throws_contains("mouse HID write failed", [&] {
+            writer.write_mouse_report(1, 0, 0, 0);
+        }, "mouse write errors should include HID context");
+    }
+    {
+        hidmi::HidWriter writer(keyboard.string(), mouse.string(), "/dev/full");
+        writer.open();
+        expect_throws_contains("absolute mouse HID write failed", [&] {
+            writer.write_absolute_mouse_report(1, 100, 200);
+        }, "absolute mouse write errors should include HID context");
+    }
+
     fs::remove_all(root);
 }
 
@@ -1006,6 +1044,7 @@ int main() {
         test_hid_writer_allows_missing_absolute_mouse();
         test_hid_writer_reopens_absolute_mouse_after_degraded_start();
         test_hid_writer_failed_open_does_not_leak_fd();
+        test_hid_writer_write_errors_include_hid_context();
         test_gadget_validation_allows_absolute_degraded();
         test_gadget_setup_validates_hid_nodes();
         test_gadget_setup_missing_mandatory_fails_after_retry();
